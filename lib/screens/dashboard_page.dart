@@ -172,6 +172,49 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  bool _isDoctorMatch(String docName, String userName) {
+    String clean(String s) {
+      s = s.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
+      if (s.startsWith('dr.')) s = s.substring(3).trim();
+      if (s.startsWith('dr ')) s = s.substring(2).trim();
+      if (s.contains(' - ')) s = s.split(' - ')[0].trim();
+      return s;
+    }
+    final cDoc = clean(docName);
+    final cUser = clean(userName);
+    if (cDoc.isEmpty || cUser.isEmpty) return false;
+    return cDoc == cUser || cDoc.contains(cUser) || cUser.contains(cDoc);
+  }
+
+  bool _isSameDay(String apptDateStr, DateTime date) {
+    try {
+      final cleanAppt = apptDateStr.replaceAll('-', '/').trim();
+      final target = DateFormat('dd/MM/yyyy').format(date);
+      if (cleanAppt == target || cleanAppt.startsWith(target)) return true;
+
+      // Fallback parse
+      final parts = cleanAppt.split('/');
+      if (parts.length == 3) {
+        if (parts[0].length == 4) { // yyyy/MM/dd
+          final parsedDate = DateTime.tryParse(cleanAppt.replaceAll('/', '-'));
+          if (parsedDate != null) {
+            return parsedDate.day == date.day &&
+                   parsedDate.month == date.month &&
+                   parsedDate.year == date.year;
+          }
+        } else { // dd/MM/yyyy
+          final day = int.tryParse(parts[0]);
+          final month = int.tryParse(parts[1]);
+          final year = int.tryParse(parts[2].split(' ')[0]);
+          if (day != null && month != null && year != null) {
+            return day == date.day && month == date.month && year == date.year;
+          }
+        }
+      }
+    } catch (_) {}
+    return false;
+  }
+
   Future<void> _fetchDoctorData() async {
     if (!mounted) return;
     setState(() => _isLoading = true);
@@ -183,14 +226,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (mounted) {
         setState(() {
           _doctorAppointments = allAppointments.where((appt) {
-            final docName = appt.doctorName.toLowerCase().trim();
-            final userName = (user?.fullname ?? '').toLowerCase().trim();
-
-            // Match exact name OR name before hyphen OR name before specialization
-            return docName == userName ||
-                docName.startsWith(userName + ' ') ||
-                (docName.contains(' - ') &&
-                    docName.split(' - ')[0].trim() == userName);
+            return _isDoctorMatch(appt.doctorName, user?.fullname ?? '');
           }).toList();
           _isLoading = false;
         });
@@ -244,15 +280,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
       child: Scaffold(
         backgroundColor: AppTheme.backgroundColor,
         drawer: isMobile ? Drawer(child: _buildSidebar(isMobile)) : null,
+
         floatingActionButton: CustomSpeedDial(
-          children: [
-            SpeedDialChild(
-              label: 'New Appointment',
-              icon: Icons.calendar_month_outlined,
-              color: AppTheme.primaryColor,
-              onTap: () {},
-            ),
-          ],
+          children: [],
         ),
         body: Row(
           children: [
@@ -294,6 +324,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
       case 0:
         return _buildDashboardView(isMobile);
       case 1:
+        return _buildConsultationsView(isMobile);
+      case 2:
         return _buildProfileView(isMobile);
       default:
         return _buildDashboardView(isMobile);
@@ -687,6 +719,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   style: TextStyle(color: Colors.white),
                 ),
                 style: AppTheme.primaryButton.copyWith(
+                  backgroundColor: MaterialStateProperty.all(AppTheme.logoRed),
                   minimumSize: MaterialStateProperty.all(const Size(0, 48)),
                 ),
               ),
@@ -796,6 +829,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     'Bio Summary',
                     user?.bio ?? '-',
                     Icons.description_outlined,
+                  ),
+                ] else ...[
+                  const SizedBox(height: 24),
+                  const Divider(height: 1, color: Color(0xFFE2E8F0)),
+                  const SizedBox(height: 20),
+                  _buildDetailRow(
+                    'Full Name',
+                    user?.fullname ?? '-',
+                    Icons.person_outline,
+                  ),
+                  _buildDetailRow(
+                    'Email Address',
+                    user?.email ?? '-',
+                    Icons.alternate_email,
+                  ),
+                  _buildDetailRow(
+                    'Mobile Number',
+                    user?.mobile ?? '-',
+                    Icons.phone_android_outlined,
                   ),
                 ],
               ],
@@ -1066,7 +1118,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   style: TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.bold,
-                    color: AppTheme.textPrimaryColor,
+                    color: AppTheme.primaryColor,
                   ),
                 ),
               ],
@@ -1092,46 +1144,44 @@ class _DashboardScreenState extends State<DashboardScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+              InkWell(
+                onTap: () => setState(() => _isEditingProfile = false),
+                borderRadius: BorderRadius.circular(8),
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 8),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Text(
-                        'Update Profile',
-                        style: TextStyle(
-                          fontSize: 28,
-                          fontWeight: FontWeight.bold,
-                          color: AppTheme.textPrimaryColor,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
+                      Icon(Icons.arrow_back, color: AppTheme.primaryColor, size: 16),
+                      SizedBox(width: 8),
                       Text(
-                        'Modify your professional details and availability',
+                        'Back to Profile',
                         style: TextStyle(
-                          color: AppTheme.textSecondaryColor,
-                          fontSize: 14,
+                          color: AppTheme.primaryColor,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
                     ],
                   ),
-                  OutlinedButton.icon(
-                    onPressed: () => setState(() => _isEditingProfile = false),
-                    icon: const Icon(Icons.arrow_back_ios_new, size: 14),
-                    label: const Text('Back to Profile'),
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 20,
-                        vertical: 12,
-                      ),
-                      minimumSize: const Size(0, 48),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                    ),
-                  ),
-                ],
+                ),
+              ),
+              const SizedBox(height: 20),
+              const Text(
+                'Update Profile',
+                style: TextStyle(
+                  fontSize: 28,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.black,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Modify your professional details and availability',
+                style: const TextStyle(
+                  color: Colors.black,
+                  fontSize: 14,
+                ),
               ),
               const SizedBox(height: 32),
 
@@ -1192,8 +1242,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                   ? user.role
                                   : 'Doctor',
                               style: const TextStyle(
-                                color: Colors.red,
-                                fontSize: 13,
+                                color: Color(0xFFC53030),
+                                fontSize: 12,
                                 fontWeight: FontWeight.bold,
                               ),
                             ),
@@ -1234,7 +1284,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             style: TextStyle(
                               fontSize: 14,
                               fontWeight: FontWeight.bold,
-                              color: AppTheme.textSecondaryColor,
+                              color: Colors.black,
                             ),
                           ),
                           const SizedBox(height: 8),
@@ -1318,7 +1368,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           style: TextStyle(
                             fontSize: 14,
                             fontWeight: FontWeight.bold,
-                            color: AppTheme.textSecondaryColor,
+                            color: Colors.black,
                           ),
                         ),
                         const SizedBox(height: 8),
@@ -1483,14 +1533,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
               sectionSpacing,
 
               // ── Section 2: Availability ───────────────────────
-              sectionCard('2', 'Availability', const Color(0xFF38A169), [
+              sectionCard('2', 'Availability', AppTheme.successColor, [
                 // Available / Leave Days chips
                 const Text(
                   'Weekly Schedule (Tap: Available ↔ Leave)',
                   style: TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.bold,
-                    color: AppTheme.textSecondaryColor,
+                    color: Colors.black,
                   ),
                 ),
                 const SizedBox(height: 10),
@@ -1503,7 +1553,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             _availableDays?.contains(day) ?? false;
 
                         Color bgColor = isAvailable
-                            ? const Color(0xFF38A169)
+                            ? AppTheme.successColor
                             : Colors.red.shade400;
                         Color borderColor = bgColor;
                         Color textColor = Colors.white;
@@ -1599,7 +1649,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   'Specific Leave Dates — pick individual dates.',
                   style: TextStyle(
                     fontSize: 12,
-                    color: AppTheme.textSecondaryColor,
+                    color: Colors.black,
                   ),
                 ),
                 const SizedBox(height: 10),
@@ -1793,28 +1843,28 @@ class _DashboardScreenState extends State<DashboardScreen> {
               // sectionSpacing,
 
               // ── Save Button ───────────────────────────────────
+              const SizedBox(height: 48),
               Row(
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
                   OutlinedButton(
                     onPressed: () => setState(() => _isEditingProfile = false),
-                    style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: Colors.grey),
-                      minimumSize: const Size(120, 48),
+                    style: AppTheme.cancelButton.copyWith(
+                      minimumSize: MaterialStateProperty.all(const Size(120, 48)),
+                    ),
+                    child: const Text('Cancel'),
+                  ),
+                  const SizedBox(width: 16),
+                  ElevatedButton(
+                    onPressed: _isLoading ? null : _saveProfile,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppTheme.logoRed,
+                      minimumSize: const Size(200, 48),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12),
                       ),
                     ),
-                    child: const Text(
-                      'Cancel',
-                      style: TextStyle(color: Colors.grey),
-                    ),
-                  ),
-                  const SizedBox(width: 16),
-                  ElevatedButton.icon(
-                    onPressed: _isLoading ? null : _saveProfile,
-                    icon: const Icon(Icons.save_outlined, color: Colors.white),
-                    label: _isLoading
+                    child: _isLoading
                         ? const SizedBox(
                             width: 20,
                             height: 20,
@@ -1824,20 +1874,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             ),
                           )
                         : const Text(
-                            'Save Profile Changes',
+                            'Update Profile',
                             style: TextStyle(
                               fontSize: 16,
                               color: Colors.white,
                               fontWeight: FontWeight.bold,
                             ),
                           ),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppTheme.primaryColor,
-                      minimumSize: const Size(200, 48),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                    ),
                   ),
                   const SizedBox(width: 24),
                 ],
@@ -1866,7 +1909,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           style: const TextStyle(
             fontSize: 14,
             fontWeight: FontWeight.bold,
-            color: AppTheme.textSecondaryColor,
+            color: Colors.black,
           ),
         ),
         const SizedBox(height: 8),
@@ -1889,25 +1932,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
             counterText: '',
             hintText: label,
             hintStyle: const TextStyle(color: Colors.grey, fontSize: 14),
-            prefixIcon: Icon(icon, size: 20),
+            prefixIcon: Icon(icon, size: 20, color: AppTheme.iconColor),
             suffixIcon: isReadOnly
                 ? const Icon(Icons.lock_outline, size: 16, color: Colors.grey)
                 : null,
             fillColor: isReadOnly
                 ? const Color(0xFFF7FAFC)
-                : AppTheme.backgroundColor,
+                : Colors.white,
             filled: true,
             border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(8),
-              borderSide: isReadOnly
-                  ? BorderSide(color: Colors.grey.withOpacity(0.1))
-                  : BorderSide.none,
+              borderSide: const BorderSide(color: AppTheme.borderColor),
             ),
             enabledBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(8),
-              borderSide: isReadOnly
-                  ? BorderSide(color: Colors.grey.withOpacity(0.1))
-                  : BorderSide.none,
+              borderSide: const BorderSide(color: AppTheme.borderColor),
             ),
           ),
         ),
@@ -1928,7 +1967,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           style: const TextStyle(
             fontSize: 14,
             fontWeight: FontWeight.bold,
-            color: AppTheme.textSecondaryColor,
+            color: Colors.black,
           ),
         ),
         const SizedBox(height: 8),
@@ -1945,18 +1984,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
             }
           },
           decoration: InputDecoration(
-            prefixIcon: Icon(icon, size: 20),
+            prefixIcon: Icon(icon, size: 20, color: AppTheme.iconColor),
             hintText: 'Tap to pick time',
             hintStyle: const TextStyle(color: Colors.grey, fontSize: 14),
-            fillColor: AppTheme.backgroundColor,
+            fillColor: Colors.white,
             filled: true,
             border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(8),
-              borderSide: BorderSide.none,
+              borderSide: const BorderSide(color: AppTheme.borderColor),
             ),
             enabledBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(8),
-              borderSide: BorderSide.none,
+              borderSide: const BorderSide(color: AppTheme.borderColor),
             ),
           ),
         ),
@@ -1977,7 +2016,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           style: const TextStyle(
             fontSize: 14,
             fontWeight: FontWeight.bold,
-            color: AppTheme.textSecondaryColor,
+            color: Colors.black,
           ),
         ),
         const SizedBox(height: 8),
@@ -2002,18 +2041,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
             }
           },
           decoration: InputDecoration(
-            prefixIcon: Icon(icon, size: 20),
+            prefixIcon: Icon(icon, size: 20, color: AppTheme.iconColor),
             hintText: 'Tap to pick date(s)',
             hintStyle: const TextStyle(color: Colors.grey, fontSize: 14),
-            fillColor: AppTheme.backgroundColor,
+            fillColor: Colors.white,
             filled: true,
             border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(8),
-              borderSide: BorderSide.none,
+              borderSide: const BorderSide(color: AppTheme.borderColor),
             ),
             enabledBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(8),
-              borderSide: BorderSide.none,
+              borderSide: const BorderSide(color: AppTheme.borderColor),
             ),
           ),
         ),
@@ -2079,7 +2118,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
               child: Column(
                 children: [
                   _buildSidebarItem(0, Icons.grid_view_outlined, 'Dashboard'),
-                  _buildSidebarItem(1, Icons.person_outline, 'My Profile'),
+                  _buildSidebarItem(
+                    1,
+                    Icons.history_edu_outlined,
+                    'My Consultations',
+                  ),
+                  _buildSidebarItem(2, Icons.person_outline, 'My Profile'),
                 ],
               ),
             ),
@@ -2089,6 +2133,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              const Divider(color: AppTheme.borderColor, height: 1, thickness: 1),
               Padding(
                 padding: const EdgeInsets.all(24.0),
                 child: Consumer<AuthProvider>(
@@ -2097,13 +2142,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     if (user == null) return const SizedBox.shrink();
                     return Row(
                       children: [
-                        const CircleAvatar(
-                          backgroundColor: AppTheme.primaryColor,
-                          radius: 18,
-                          child: Icon(
-                            Icons.person,
-                            color: Colors.white,
-                            size: 20,
+                        Container(
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            border: Border.all(color: AppTheme.borderColor),
+                          ),
+                          child: CircleAvatar(
+                            backgroundColor: AppTheme.getAvatarColors(user.fullname)['bg'],
+                            radius: 18,
+                            child: Text(
+                              user.fullname.isNotEmpty ? user.fullname[0].toUpperCase() : '?',
+                              style: TextStyle(
+                                color: AppTheme.getAvatarColors(user.fullname)['text'],
+                                fontWeight: FontWeight.bold,
+                                fontSize: 12,
+                              ),
+                            ),
                           ),
                         ),
                         const SizedBox(width: 12),
@@ -2208,7 +2262,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
           if (isMobile)
             Builder(
               builder: (context) => IconButton(
-                icon: const Icon(Icons.menu),
+                icon: const Icon(
+                  Icons.menu,
+                  color: AppTheme.textSecondaryColor,
+                ),
                 onPressed: () => Scaffold.of(context).openDrawer(),
               ),
             ),
@@ -2221,7 +2278,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 borderRadius: BorderRadius.circular(8),
                 border: Border.all(color: AppTheme.borderColor),
               ),
-              child: TextField(
+              child: TextFormField(
                 textAlignVertical: TextAlignVertical.center,
                 decoration: InputDecoration(
                   isCollapsed: true,
@@ -2246,6 +2303,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   enabledBorder: InputBorder.none,
                   focusedBorder: InputBorder.none,
                 ),
+                readOnly: true,
+                onTap: _showSearchOverlay,
               ),
             ),
           ),
@@ -2306,14 +2365,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _buildStatsRow(bool isMobile) {
     // Calculate real stats
     final now = DateTime.now();
-    final todayStr = DateFormat('dd/MM/yyyy').format(now);
 
     final int todayCount = _doctorAppointments
-        .where(
-          (a) =>
-              a.appointmentDate == todayStr ||
-              a.appointmentDate.startsWith(todayStr),
-        )
+        .where((a) => _isSameDay(a.appointmentDate, now))
         .length;
     final int confirmedCount = _doctorAppointments
         .where((a) => a.status == 'Confirmed' || a.status == 'Scheduled')
@@ -2433,9 +2487,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (a.status.toLowerCase() == 'cancelled') return false;
       if (_selectedDate == null) return true;
 
-      final String todayStr = DateFormat('dd/MM/yyyy').format(_selectedDate!);
-      return a.appointmentDate == todayStr ||
-          a.appointmentDate.startsWith(todayStr);
+      return _isSameDay(a.appointmentDate, _selectedDate!);
     }).toList();
 
     return Container(
@@ -2465,7 +2517,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     ),
                     if (_selectedDate != null)
                       Text(
-                        DateFormat('EEEE, MMM d, yyyy').format(_selectedDate!),
+                        DateFormat('dd/MM/yyyy').format(_selectedDate!),
                         style: const TextStyle(
                           color: AppTheme.textSecondaryColor,
                           fontSize: 12,

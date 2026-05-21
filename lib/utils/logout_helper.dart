@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../providers/auth_provider.dart';
 import '../screens/login_page.dart';
+import 'app_theme.dart';
 
 class LogoutHelper {
   static void showLogoutConfirmation(BuildContext context, AuthProvider auth) {
@@ -11,8 +12,9 @@ class LogoutHelper {
           title: const Text('Confirm Logout', style: TextStyle(fontWeight: FontWeight.bold)),
           content: const Text('Are you sure you want to logout?'),
           actions: [
-            TextButton(
+            OutlinedButton(
               onPressed: () => Navigator.pop(dialogContext),
+              style: AppTheme.cancelButton,
               child: const Text('Cancel'),
             ),
             ElevatedButton(
@@ -26,8 +28,17 @@ class LogoutHelper {
                 );
               },
               style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.redAccent,
+                backgroundColor: AppTheme.logoRed,
                 foregroundColor: Colors.white,
+                minimumSize: const Size(130, 48),
+                padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                textStyle: const TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
               child: const Text('Yes'),
             ),
