@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import '../utils/app_theme.dart';
 import '../models/appointment_model.dart';
@@ -110,6 +111,10 @@ class _AppointmentDetailsDialogState extends State<AppointmentDetailsDialog> {
       };
 
       await _appointmentController.updateVitals(widget.appointment.id!, vitalsData);
+
+      if (widget.appointment.status == 'Confirmed' || widget.appointment.status == 'Checked-in') {
+        await _appointmentController.updateStatus(widget.appointment.id!, 'Waiting');
+      }
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -356,7 +361,9 @@ class _AppointmentDetailsDialogState extends State<AppointmentDetailsDialog> {
   }
 
   Widget _buildAppointmentDetailsCard(bool isMobile) {
-    final status = widget.appointment.status;
+    final status = widget.appointment.status == 'Checked-in'
+        ? 'Confirmed'
+        : widget.appointment.status;
     final statusColor = AppTheme.getStatusTextColor(status);
     final statusBg = AppTheme.getStatusBgColor(status);
 
@@ -450,6 +457,50 @@ class _AppointmentDetailsDialogState extends State<AppointmentDetailsDialog> {
   }
 
   Widget _buildDoctorDetailsCard(bool isMobile) {
+    final docId = widget.appointment.doctorDisplayId?.trim().isNotEmpty == true
+        ? widget.appointment.doctorDisplayId!
+        : 'N/A';
+
+    if (isMobile) {
+      return _buildCard(
+        child: Column(
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: _buildInfoItem(
+                    'Doctor Name',
+                    widget.appointment.doctorName,
+                    icon: Icons.person_outline,
+                  ),
+                ),
+                Expanded(
+                  child: _buildInfoItem(
+                    'Doctor ID',
+                    docId,
+                    icon: Icons.badge_outlined,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: _buildInfoItem(
+                    'Department',
+                    widget.appointment.department,
+                    icon: Icons.business_outlined,
+                  ),
+                ),
+                const Spacer(),
+              ],
+            ),
+          ],
+        ),
+      );
+    }
+
     return _buildCard(
       child: Row(
         children: [
@@ -458,6 +509,13 @@ class _AppointmentDetailsDialogState extends State<AppointmentDetailsDialog> {
               'Doctor Name',
               widget.appointment.doctorName,
               icon: Icons.person_outline,
+            ),
+          ),
+          Expanded(
+            child: _buildInfoItem(
+              'Doctor ID',
+              docId,
+              icon: Icons.badge_outlined,
             ),
           ),
           Expanded(
@@ -492,10 +550,12 @@ class _AppointmentDetailsDialogState extends State<AppointmentDetailsDialog> {
                     hint: 'e.g. 120',
                     isNumeric: true,
                     validator: (val) {
-                      if (val == null || val.trim().isEmpty) return 'Required';
-                      final num = int.tryParse(val.trim());
-                      if (num == null) return 'Must be integer';
-                      if (num < 40 || num > 250) return 'Invalid systolic';
+                      final text = val?.trim() ?? '';
+                      if (text.isEmpty) return 'Please enter BP systolic';
+                      final num = int.tryParse(text);
+                      if (num == null) return 'BP Systolic must be an integer';
+                      if (num == 0) return 'BP Systolic cannot be 0';
+                      if (num < 90 || num > 300) return 'BP Systolic must be between 90 and 300 mmHg';
                       return null;
                     },
                   ),
@@ -508,10 +568,12 @@ class _AppointmentDetailsDialogState extends State<AppointmentDetailsDialog> {
                     hint: 'e.g. 80',
                     isNumeric: true,
                     validator: (val) {
-                      if (val == null || val.trim().isEmpty) return 'Required';
-                      final num = int.tryParse(val.trim());
-                      if (num == null) return 'Must be integer';
-                      if (num < 30 || num > 180) return 'Invalid diastolic';
+                      final text = val?.trim() ?? '';
+                      if (text.isEmpty) return 'Please enter BP diastolic';
+                      final num = int.tryParse(text);
+                      if (num == null) return 'BP Diastolic must be an integer';
+                      if (num == 0) return 'BP Diastolic cannot be 0';
+                      if (num < 50 || num > 180) return 'BP Diastolic must be between 50 and 180 mmHg';
                       return null;
                     },
                   ),
@@ -524,13 +586,16 @@ class _AppointmentDetailsDialogState extends State<AppointmentDetailsDialog> {
                 Expanded(
                   child: _buildVitalInputField(
                     controller: _sugarCtrl,
-                    label: 'Sugar Level (mg/dL)',
+                    label: 'Sugar Level (mg/dL) *',
                     hint: 'e.g. 95',
                     isNumeric: true,
                     validator: (val) {
-                      if (val == null || val.trim().isEmpty) return null;
-                      final num = double.tryParse(val.trim());
-                      if (num == null) return 'Invalid sugar';
+                      final text = val?.trim() ?? '';
+                      if (text.isEmpty) return 'Please enter sugar level';
+                      final num = double.tryParse(text);
+                      if (num == null) return 'Sugar Level must be a number';
+                      if (num == 0) return 'Sugar Level cannot be 0';
+                      if (num < 30 || num > 600) return 'Sugar Level must be between 30 and 600 mg/dL';
                       return null;
                     },
                   ),
@@ -543,10 +608,12 @@ class _AppointmentDetailsDialogState extends State<AppointmentDetailsDialog> {
                     hint: 'e.g. 98.6',
                     isNumeric: true,
                     validator: (val) {
-                      if (val == null || val.trim().isEmpty) return 'Required';
-                      final num = double.tryParse(val.trim());
-                      if (num == null) return 'Must be decimal';
-                      if (num < 90 || num > 115) return 'Invalid temp';
+                      final text = val?.trim() ?? '';
+                      if (text.isEmpty) return 'Please enter temperature';
+                      final num = double.tryParse(text);
+                      if (num == null) return 'Temperature must be a number';
+                      if (num == 0) return 'Temperature cannot be 0';
+                      if (num < 90 || num > 115) return 'Temperature must be between 90 and 115 °F';
                       return null;
                     },
                   ),
@@ -556,11 +623,11 @@ class _AppointmentDetailsDialogState extends State<AppointmentDetailsDialog> {
             const SizedBox(height: 16),
             _buildVitalInputField(
               controller: _complaintsCtrl,
-              label: 'Reason for Visit / Complaints *',
+              label: 'Reason for Visit *',
               hint: 'Describe patient complaints...',
               maxLines: 3,
               validator: (val) {
-                if (val == null || val.trim().isEmpty) return 'Required';
+                if (val == null || val.trim().isEmpty) return 'Please enter reason for visit';
                 return null;
               },
             ),
@@ -617,7 +684,7 @@ class _AppointmentDetailsDialogState extends State<AppointmentDetailsDialog> {
           const Divider(height: 1),
           const SizedBox(height: 12),
           const Text(
-            'Reason for Visit / Complaints',
+            'Reason for Visit',
             style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF64748B)),
           ),
           const SizedBox(height: 6),
@@ -642,15 +709,28 @@ class _AppointmentDetailsDialogState extends State<AppointmentDetailsDialog> {
     int maxLines = 1,
     String? Function(String?)? validator,
   }) {
+    final bool hasAsterisk = label.endsWith(' *');
+    final String displayLabel = hasAsterisk ? label.substring(0, label.length - 2) : label;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          label,
-          style: const TextStyle(
-            fontSize: 11,
-            fontWeight: FontWeight.bold,
-            color: Color(0xFF475569),
+        Text.rich(
+          TextSpan(
+            text: displayLabel,
+            style: const TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.bold,
+              color: Color(0xFF475569),
+            ),
+            children: hasAsterisk
+                ? const [
+                    TextSpan(
+                      text: ' *',
+                      style: TextStyle(color: Colors.red),
+                    ),
+                  ]
+                : const [],
           ),
         ),
         const SizedBox(height: 6),
@@ -659,12 +739,17 @@ class _AppointmentDetailsDialogState extends State<AppointmentDetailsDialog> {
           keyboardType: isNumeric ? const TextInputType.numberWithOptions(decimal: true) : TextInputType.text,
           maxLines: maxLines,
           style: const TextStyle(fontSize: 13, color: AppTheme.textPrimaryColor),
+          inputFormatters: isNumeric
+              ? [FilteringTextInputFormatter.allow(RegExp(r'[0-9.]'))]
+              : null,
+          autovalidateMode: AutovalidateMode.onUserInteraction,
           decoration: InputDecoration(
             hintText: hint,
             hintStyle: const TextStyle(fontSize: 13, color: Color(0xFF94A3B8)),
             contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             fillColor: Colors.white,
             filled: true,
+            errorMaxLines: 2,
             border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(6),
               borderSide: const BorderSide(color: Color(0xFFCBD5E1)),
@@ -980,7 +1065,7 @@ class _AppointmentDetailsDialogState extends State<AppointmentDetailsDialog> {
     );
   }
 
-  Widget _buildInfoItem(String label, String value, {IconData? icon, Color? textColor, bool isCompact = false}) {
+  Widget _buildInfoItem(String label, String value, {IconData? icon, Color? textColor, bool isCompact = false, Widget? customValueWidget}) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1000,14 +1085,15 @@ class _AppointmentDetailsDialogState extends State<AppointmentDetailsDialog> {
               const SizedBox(width: 6),
             ],
             Expanded(
-              child: Text(
-                value,
-                style: TextStyle(
-                  fontSize: isCompact ? 12 : 13,
-                  fontWeight: FontWeight.bold,
-                  color: textColor ?? AppTheme.textPrimaryColor,
-                ),
-              ),
+              child: customValueWidget ??
+                  Text(
+                    value,
+                    style: TextStyle(
+                      fontSize: isCompact ? 12 : 13,
+                      fontWeight: FontWeight.bold,
+                      color: textColor ?? AppTheme.textPrimaryColor,
+                    ),
+                  ),
             ),
           ],
         ),

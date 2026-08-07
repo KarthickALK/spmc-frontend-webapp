@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../widgets/custom_dropdown_search.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import '../utils/app_theme.dart';
@@ -35,6 +36,9 @@ class _AdminAppointmentManagementState
   String _filterStatus = 'All';
   String _searchQuery = '';
   bool _isFilterVisible = false;
+  int _currentPage = 0;
+  final int _itemsPerPage = 10;
+  final TextEditingController _searchController = TextEditingController();
 
   final List<String> _statusOptions = [
     'All',
@@ -105,6 +109,7 @@ class _AdminAppointmentManagementState
   void dispose() {
     _vScroll.dispose();
     _hScroll.dispose();
+    _searchController.dispose();
     super.dispose();
   }
 
@@ -121,9 +126,7 @@ class _AdminAppointmentManagementState
         _apptCtrl.fetchAdminAppointments(
           date: dateStr,
           doctor: _filterDoctor,
-          status: _filterStatus == 'All'
-              ? null
-              : _filterStatus,
+          status: _filterStatus == 'All' ? null : _filterStatus,
           department: _filterDepartment,
         ),
         _adminCtrl.fetchStaff(role: 'Doctor'),
@@ -150,9 +153,10 @@ class _AdminAppointmentManagementState
   }
 
   List<AppointmentModel> get _filteredAppointments {
-    if (_searchQuery.trim().isEmpty) return _appointments;
+    final list = _appointments.where((a) => a.status.toLowerCase() != 'admitted').toList();
+    if (_searchQuery.trim().isEmpty) return list;
     final query = _searchQuery.toLowerCase();
-    return _appointments.where((a) {
+    return list.where((a) {
       return a.patientName.toLowerCase().contains(query) ||
           (a.patientDisplayId?.toLowerCase().contains(query) ?? false) ||
           (a.patientPhone?.toLowerCase().contains(query) ?? false) ||
@@ -192,6 +196,7 @@ class _AdminAppointmentManagementState
     String? department = appt.department;
     String? appointmentType = appt.appointmentType;
     bool isSaving = false;
+    String? reasonError;
 
     List<String> availableStatuses = [
       'Confirmed',
@@ -400,127 +405,44 @@ class _AdminAppointmentManagementState
                       // Status field (edit/cancel/reopen)
                       if (mode == 'edit' ||
                           mode == 'cancel' ||
-                          mode == 'reopen')
+                          mode == 'reopen') ...[
                         buildField(
                           'Force Status Change',
-                          DropdownButtonFormField<String>(
+                          CustomDropdownSearch(
+                            label: '',
                             value: selectedStatus,
-                            decoration: const InputDecoration(
-                              contentPadding: EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 10,
-                              ),
-                            ),
-                            items: availableStatuses
-                                .map(
-                                  (s) => DropdownMenuItem(
-                                    value: s,
-                                    child: Text(s),
-                                  ),
-                                )
-                                .toList(),
-                            onChanged: mode == 'view'
-                                ? null
-                                : (v) => setS(() => selectedStatus = v),
-                          ),
-                        ),
-
-                      // Edit Fields
-                      if (mode == 'edit') ...[
-                        buildField(
-                          'Patient Name',
-                          TextFormField(
-                            initialValue: patientName,
-                            decoration: const InputDecoration(
-                              contentPadding: EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 10,
-                              ),
-                            ),
-                            onChanged: (v) => patientName = v,
-                          ),
-                        ),
-                        buildField(
-                          'Department',
-                          DropdownButtonFormField<String>(
-                            value: _departments.contains(department)
-                                ? department
-                                : null,
-                            decoration: const InputDecoration(
-                              contentPadding: EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 10,
-                              ),
-                            ),
-                            hint: const Text('Select department'),
-                            items: _departments
-                                .map(
-                                  (d) => DropdownMenuItem(
-                                    value: d,
-                                    child: Text(d),
-                                  ),
-                                )
-                                .toList(),
+                            dropdownItems: availableStatuses,
                             onChanged: (v) {
-                              setS(() {
-                                department = v;
-                                filteredDoctors = _doctors
-                                    .where((d) => d.specialization == v)
-                                    .map((d) => d.fullname)
-                                    .toList();
-                                if (filteredDoctors.isNotEmpty) {
-                                  selectedDoctor = filteredDoctors[0];
-                                } else {
-                                  selectedDoctor = null;
-                                }
-                              });
+                              if (v != null) {
+                                setS(() => selectedStatus = v);
+                              }
                             },
                           ),
                         ),
+                      ],
+
+                      // Appointment type & doctor (edit only)
+                      if (mode == 'edit') ...[
                         buildField(
                           'Appointment Type',
-                          DropdownButtonFormField<String>(
+                          CustomDropdownSearch(
+                            label: '',
                             value: apptTypes.contains(appointmentType)
                                 ? appointmentType
                                 : null,
-                            decoration: const InputDecoration(
-                              contentPadding: EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 10,
-                              ),
-                            ),
-                            items: apptTypes
-                                .map(
-                                  (t) => DropdownMenuItem(
-                                    value: t,
-                                    child: Text(t),
-                                  ),
-                                )
-                                .toList(),
+                            dropdownItems: apptTypes,
                             onChanged: (v) => setS(() => appointmentType = v),
                           ),
                         ),
                         buildField(
                           'Reassign Doctor',
-                          DropdownButtonFormField<String>(
+                          CustomDropdownSearch(
+                            label: '',
+                            hint: 'Select doctor',
                             value: filteredDoctors.contains(selectedDoctor)
                                 ? selectedDoctor
                                 : null,
-                            decoration: const InputDecoration(
-                              contentPadding: EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 10,
-                              ),
-                            ),
-                            hint: const Text('Select doctor'),
-                            items: filteredDoctors
-                                .map(
-                                  (d) => DropdownMenuItem(
-                                    value: d,
-                                    child: Text(d),
-                                  ),
-                                )
-                                .toList(),
+                            dropdownItems: filteredDoctors,
                             onChanged: (v) => setS(() => selectedDoctor = v),
                           ),
                         ),
@@ -631,13 +553,14 @@ class _AdminAppointmentManagementState
 
                       // Override reason (mandatory)
                       buildField(
-                        'Override Reason *',
+                        'Override Reason',
                         TextFormField(
                           controller: reasonCtrl,
                           maxLines: 3,
+                          maxLength: 100,
                           decoration: InputDecoration(
-                            hintText:
-                                'Enter reason for this override (required)',
+                            hintText: 'Enter reason for this override',
+                            errorText: reasonError,
                             contentPadding: const EdgeInsets.all(12),
                             fillColor: Colors.white,
                             filled: true,
@@ -660,7 +583,11 @@ class _AdminAppointmentManagementState
                               ),
                             ),
                           ),
-                          onChanged: (_) => setS(() {}),
+                          onChanged: (value) => setS(() {
+                            reasonError = value.trim().isEmpty
+                                ? 'Override reason is required.'
+                                : null;
+                          }),
                         ),
                       ),
 
@@ -709,25 +636,24 @@ class _AdminAppointmentManagementState
               if (mode != 'view')
                 ElevatedButton(
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: mode == 'cancel'
-                        ? Colors.red
-                        : AppTheme.primaryColor,
+                    backgroundColor: AppTheme.logoRed,
                     foregroundColor: Colors.white,
-                    minimumSize: const Size(120, 44),
+                    minimumSize: const Size(120, 48),
                     shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 24,
+                      vertical: 14,
                     ),
                   ),
                   onPressed: isSaving
                       ? null
                       : () async {
                           if (reasonCtrl.text.trim().isEmpty) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text('Override reason is required.'),
-                                backgroundColor: Colors.red,
-                              ),
-                            );
+                            setS(() {
+                              reasonError = 'Override reason is required.';
+                            });
                             return;
                           }
                           setS(() => isSaving = true);
@@ -862,7 +788,7 @@ class _AdminAppointmentManagementState
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'Appointment Management',
+                    'Appointments',
                     style: TextStyle(
                       fontSize: isMobile ? 20 : 26,
                       fontWeight: FontWeight.bold,
@@ -1161,7 +1087,11 @@ class _AdminAppointmentManagementState
           const SizedBox(width: 12),
           Expanded(
             child: TextField(
-              onChanged: (v) => setState(() => _searchQuery = v),
+              controller: _searchController,
+              onChanged: (v) => setState(() {
+                _searchQuery = v;
+                _currentPage = 0;
+              }),
               decoration: const InputDecoration(
                 hintText:
                     'Search by patient name, mobile number, or department...',
@@ -1176,6 +1106,17 @@ class _AdminAppointmentManagementState
               ),
             ),
           ),
+          if (_searchQuery.isNotEmpty)
+            IconButton(
+              icon: const Icon(Icons.clear, size: 20, color: AppTheme.textSecondaryColor),
+              onPressed: () {
+                _searchController.clear();
+                setState(() {
+                  _searchQuery = '';
+                  _currentPage = 0;
+                });
+              },
+            ),
         ],
       ),
     );
@@ -1281,33 +1222,12 @@ class _AdminAppointmentManagementState
                   ),
                 ),
               )
-            : Container(
+            : CustomDropdownSearch(
+                label: '',
+                value: value,
+                dropdownItems: items,
                 height: 48,
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                decoration: BoxDecoration(
-                  border: Border.all(color: AppTheme.borderColor),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: DropdownButtonHideUnderline(
-                  child: DropdownButton<String>(
-                    isExpanded: true,
-                    value: value,
-                    icon: const Icon(Icons.keyboard_arrow_down, size: 20),
-                    style: const TextStyle(
-                      color: AppTheme.textPrimaryColor,
-                      fontSize: 14,
-                    ),
-                    items: items
-                        .map(
-                          (item) => DropdownMenuItem(
-                            value: item,
-                            child: Text(item, overflow: TextOverflow.ellipsis),
-                          ),
-                        )
-                        .toList(),
-                    onChanged: onChanged,
-                  ),
-                ),
+                onChanged: onChanged,
               ),
       ],
     );
@@ -1331,7 +1251,20 @@ class _AdminAppointmentManagementState
         ),
       );
     }
-    final apps = _filteredAppointments;
+    final allFiltered = _filteredAppointments;
+    final totalAppointments = allFiltered.length;
+    final totalPages = (totalAppointments / _itemsPerPage).ceil();
+
+    if (_currentPage >= totalPages && totalPages > 0) {
+      _currentPage = totalPages - 1;
+    }
+    if (_currentPage < 0) _currentPage = 0;
+
+    final apps = allFiltered
+        .skip(_currentPage * _itemsPerPage)
+        .take(_itemsPerPage)
+        .toList();
+
     if (apps.isEmpty) {
       return Center(
         child: Column(
@@ -1369,48 +1302,61 @@ class _AdminAppointmentManagementState
       ),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(12),
-        child: LayoutBuilder(
-          builder: (ctx, constraints) => Scrollbar(
-            controller: _vScroll,
-            thumbVisibility: true,
-            child: SingleChildScrollView(
-              controller: _vScroll,
-              child: SingleChildScrollView(
-                controller: _hScroll,
-                scrollDirection: Axis.horizontal,
-                child: ConstrainedBox(
-                  constraints: BoxConstraints(minWidth: constraints.maxWidth),
-                  child: DataTable(
-                    horizontalMargin: 20,
-                    columnSpacing: 24,
-                    headingRowHeight: 52,
-                    dataRowMinHeight: 58,
-                    dataRowMaxHeight: 72,
-                    headingRowColor: WidgetStateProperty.all(
-                      const Color(0xFFEDF2F7),
-                    ),
-                    headingTextStyle: const TextStyle(
-                      fontWeight: FontWeight.w600,
-                      color: Color(0xFF64748B),
-                      fontSize: 13,
-                    ),
-                    columns: const [
-                      DataColumn(label: Text('Patient')),
-                      DataColumn(label: Text('Doctor')),
-                      DataColumn(label: Text('Doctor Department')),
-                      DataColumn(label: Text('Date & Time')),
-                      DataColumn(label: Text('Type')),
-                      DataColumn(label: Text('Status')),
-                      DataColumn(label: Text('Override')),
-                      DataColumn(label: Text('Actions')),
-                    ],
-                    rows: apps.map((appt) {
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Expanded(
+              child: LayoutBuilder(
+                builder: (ctx, constraints) => Scrollbar(
+                  controller: _vScroll,
+                  thumbVisibility: true,
+                  child: SingleChildScrollView(
+                    controller: _vScroll,
+                    child: SingleChildScrollView(
+                      controller: _hScroll,
+                      scrollDirection: Axis.horizontal,
+                      child: ConstrainedBox(
+                        constraints: BoxConstraints(minWidth: constraints.maxWidth),
+                        child: DataTable(
+                          horizontalMargin: 20,
+                          columnSpacing: 24,
+                          headingRowHeight: 52,
+                          dataRowMinHeight: 58,
+                          dataRowMaxHeight: 72,
+                          headingRowColor: WidgetStateProperty.all(
+                            const Color(0xFFEDF2F7),
+                          ),
+                          headingTextStyle: const TextStyle(
+                            fontWeight: FontWeight.w600,
+                            color: Color(0xFF64748B),
+                            fontSize: 13,
+                          ),
+                          columns: const [
+                            DataColumn(label: Text('S.No')),
+                            DataColumn(label: Text('Patient')),
+                            DataColumn(label: Text('Doctor')),
+                            DataColumn(label: Text('Doctor Department')),
+                            DataColumn(label: Text('Date & Time')),
+                            DataColumn(label: Text('Type')),
+                            DataColumn(label: Text('Status')),
+                            DataColumn(label: Text('Override')),
+                            DataColumn(label: Text('Actions')),
+                          ],
+                          rows: apps.asMap().entries.map((entry) {
+                            final index = entry.key;
+                            final appt = entry.value;
                       final sc = _statusColor(appt.status);
                       final hasOverride =
                           appt.overrideReason != null &&
                           appt.overrideReason!.isNotEmpty;
                       return DataRow(
                         cells: [
+                          DataCell(
+                            Text(
+                              '${(index + 1) + (_currentPage * _itemsPerPage)}',
+                              style: const TextStyle(fontSize: 13),
+                            ),
+                          ),
                           DataCell(
                             Column(
                               mainAxisAlignment: MainAxisAlignment.center,
@@ -1424,7 +1370,7 @@ class _AdminAppointmentManagementState
                                   ),
                                 ),
                                 Text(
-                                  'ID: ${appt.patientDisplayId ?? appt.patientId}',
+                                  '${appt.patientDisplayId ?? appt.patientId}',
                                   style: const TextStyle(
                                     fontSize: 11,
                                     color: AppTheme.textSecondaryColor,
@@ -1448,7 +1394,7 @@ class _AdminAppointmentManagementState
                                 if (appt.doctorDisplayId != null &&
                                     appt.doctorDisplayId!.isNotEmpty)
                                   Text(
-                                    'ID: ${appt.doctorDisplayId}',
+                                    appt.doctorDisplayId!,
                                     style: const TextStyle(
                                       fontSize: 11,
                                       color: AppTheme.textSecondaryColor,
@@ -1485,7 +1431,10 @@ class _AdminAppointmentManagementState
                                 if (appt.isRescheduled)
                                   Container(
                                     margin: const EdgeInsets.only(top: 2),
-                                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 4,
+                                      vertical: 1,
+                                    ),
                                     decoration: BoxDecoration(
                                       color: const Color(0xFFF3E8FF),
                                       borderRadius: BorderRadius.circular(4),
@@ -1644,8 +1593,13 @@ class _AdminAppointmentManagementState
           ),
         ),
       ),
-    );
-  }
+      if (totalPages > 1) const Divider(height: 1),
+      _buildPaginationControls(totalPages, isMobile),
+    ],
+  ),
+),
+);
+}
 
   Widget _actionBtn(
     IconData icon,
@@ -1671,4 +1625,74 @@ class _AdminAppointmentManagementState
     );
   }
 
+  Widget _buildPaginationControls(int totalPages, bool isMobile) {
+    if (totalPages <= 1) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          Text(
+            'Page ${_currentPage + 1} of $totalPages',
+            style: const TextStyle(
+              fontSize: 13,
+              color: AppTheme.textSecondaryColor,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          const SizedBox(width: 16),
+          OutlinedButton(
+            onPressed: _currentPage > 0
+                ? () => setState(() => _currentPage--)
+                : null,
+            style: OutlinedButton.styleFrom(
+              minimumSize: const Size(80, 36),
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+              side: BorderSide(
+                color: _currentPage > 0
+                    ? AppTheme.primaryColor
+                    : AppTheme.borderColor,
+              ),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: const [
+                Icon(Icons.chevron_left, size: 18),
+                Text('Prev'),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          OutlinedButton(
+            onPressed: _currentPage < totalPages - 1
+                ? () => setState(() => _currentPage++)
+                : null,
+            style: OutlinedButton.styleFrom(
+              minimumSize: const Size(80, 36),
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+              side: BorderSide(
+                color: _currentPage < totalPages - 1
+                    ? AppTheme.primaryColor
+                    : AppTheme.borderColor,
+              ),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: const [
+                Text('Next'),
+                Icon(Icons.chevron_right, size: 18),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }

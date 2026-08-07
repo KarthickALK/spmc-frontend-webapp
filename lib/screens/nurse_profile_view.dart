@@ -1,12 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:file_picker/file_picker.dart';
 import '../utils/app_theme.dart';
 import '../providers/auth_provider.dart';
 import '../controllers/nurse/nurse_controller.dart';
+import '../widgets/custom_dropdown_search.dart';
+import '../services/media_service.dart';
+import '../widgets/document_view_dialog.dart';
+import 'dart:io' as io;
+import 'package:go_router/go_router.dart';
+import '../core/routes/route_constants.dart';
 
 class NurseProfileView extends StatefulWidget {
-  const NurseProfileView({Key? key}) : super(key: key);
+  final bool isEditing;
+  const NurseProfileView({Key? key, this.isEditing = false}) : super(key: key);
 
   @override
   State<NurseProfileView> createState() => _NurseProfileViewState();
@@ -15,7 +23,63 @@ class NurseProfileView extends StatefulWidget {
 class _NurseProfileViewState extends State<NurseProfileView> {
   bool _isEditingProfile = false;
   bool _isLoading = false;
+  String? _uploadedFileSizeStr;
+  List<int>? _certFileBytes;
+  String? _certFileName;
+  String? _certFileSizeStr;
   NurseController get _nurseController => NurseController();
+
+  String _formatFileSize(int bytes) {
+    if (bytes < 1024) {
+      return '$bytes B';
+    } else if (bytes < 1024 * 1024) {
+      return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    } else {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
+  }
+
+  Future<void> _pickCertificate() async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['pdf', 'jpg', 'jpeg', 'png'],
+      );
+
+      if (result != null && result.files.isNotEmpty) {
+        final file = result.files.first;
+        List<int>? fileBytes = file.bytes;
+
+        // Fallback for mobile devices where file.bytes can be null
+        if (fileBytes == null && file.path != null) {
+          fileBytes = io.File(file.path!).readAsBytesSync();
+        }
+
+        if (fileBytes != null) {
+          final bytesCount = fileBytes.length;
+          if (bytesCount > 5 * 1024 * 1024) {
+            messenger.showSnackBar(
+              const SnackBar(
+                content: Text('File exceeds 5MB limit. Please choose a smaller file.'),
+                backgroundColor: Colors.red,
+              ),
+            );
+            return;
+          }
+
+          setState(() {
+            _certFileBytes = fileBytes;
+            _certFileName = file.name;
+            _certFileSizeStr = _formatFileSize(bytesCount);
+            _regCertController.text = file.name; // Display local name until saved
+          });
+        }
+      }
+    } catch (e) {
+      print('Error picking certificate file: $e');
+    }
+  }
 
   // Basic Controllers
   TextEditingController? __nameController;
@@ -59,12 +123,23 @@ class _NurseProfileViewState extends State<NurseProfileView> {
   @override
   void initState() {
     super.initState();
+    _isEditingProfile = widget.isEditing;
     _initControllers();
+  }
+
+  @override
+  void didUpdateWidget(covariant NurseProfileView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isEditing != oldWidget.isEditing) {
+      setState(() {
+        _isEditingProfile = widget.isEditing;
+      });
+    }
   }
 
   void _initControllers() {
     final user = Provider.of<AuthProvider>(context, listen: false).user;
-    _nameController.text = user?.fullname ?? '';
+    _nameController.text = user?.rawFullname ?? '';
     _emailController.text = user?.email ?? '';
     _bioController.text = user?.bio ?? '';
     _mobileController.text = user?.mobile ?? '';
@@ -104,6 +179,7 @@ class _NurseProfileViewState extends State<NurseProfileView> {
   }
 
   Future<void> _saveProfile() async {
+    final messenger = ScaffoldMessenger.of(context);
     // Auto-calculate weekly off days: any day not selected as a working day is automatically a weekly off day
     final allDays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
     _weeklyOffDays = allDays
@@ -112,6 +188,21 @@ class _NurseProfileViewState extends State<NurseProfileView> {
 
     setState(() => _isLoading = true);
     try {
+      // Upload picked file to Cloudinary if needed during form submit
+      if (_certFileBytes != null && _certFileName != null) {
+        final secureUrl = await MediaService.uploadToCloudinary(
+          fileBytes: _certFileBytes!,
+          fileName: _certFileName!,
+          folder: 'nurses',
+        );
+        if (secureUrl != null) {
+          _regCertController.text = secureUrl;
+          _uploadedFileSizeStr = _certFileSizeStr;
+        } else {
+          throw Exception('Failed to upload registration certificate to Cloudinary.');
+        }
+      }
+
       final updatedUser = await _nurseController.updateProfile(
         fullname: _nameController.text,
         mobile: _mobileController.text,
@@ -130,8 +221,13 @@ class _NurseProfileViewState extends State<NurseProfileView> {
 
       if (mounted) {
         Provider.of<AuthProvider>(context, listen: false).updateUser(updatedUser);
-        setState(() => _isEditingProfile = false);
-        ScaffoldMessenger.of(context).showSnackBar(
+        setState(() {
+          _certFileBytes = null;
+          _certFileName = null;
+          _certFileSizeStr = null;
+        });
+        GoRouter.of(context).go(AppRoutes.nurseProfile);
+        messenger.showSnackBar(
           const SnackBar(
             content: Text('Profile updated successfully!', style: TextStyle(color: Colors.white)),
             backgroundColor: Colors.green,
@@ -140,8 +236,8 @@ class _NurseProfileViewState extends State<NurseProfileView> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        messenger.showSnackBar(
+          SnackBar(content: Text('Error saving profile: $e'), backgroundColor: Colors.red),
         );
       }
     } finally {
@@ -186,6 +282,158 @@ class _NurseProfileViewState extends State<NurseProfileView> {
     );
   }
 
+  Widget _buildCertificateDisplayRow(String? certUrl) {
+    final hasCert = certUrl != null && certUrl.isNotEmpty;
+    final isUrl = hasCert && certUrl.startsWith('http');
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 20.0),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF0F7FF),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(
+              isUrl ? Icons.verified_user_outlined : Icons.picture_as_pdf_outlined,
+              size: 20,
+              color: const Color(0xFF0F5A8E),
+            ),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  'Registration Certificate',
+                  style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: Color(0xFF718096)),
+                ),
+                const SizedBox(height: 6),
+                if (isUrl)
+                  OutlinedButton.icon(
+                    onPressed: () {
+                      showDocumentViewer(context, certUrl, 'Registration Certificate');
+                    },
+                    icon: const Icon(Icons.remove_red_eye_outlined, size: 14, color: Color(0xFF0F5A8E)),
+                    label: const Text(
+                      'view certificate',
+                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF0F5A8E)),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                      side: const BorderSide(color: Color(0xFF0F5A8E)),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                      backgroundColor: Colors.white,
+                    ),
+                  )
+                else
+                  Text(
+                    hasCert ? certUrl : 'No certificate uploaded',
+                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF2D3748)),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCertificateUploadField() {
+    final certUrl = _regCertController.text;
+    final hasCert = certUrl.isNotEmpty;
+    final isUrl = hasCert && certUrl.startsWith('http');
+    final isLocal = _certFileBytes != null;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Registration Certificate Document',
+          style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.black),
+        ),
+        const SizedBox(height: 8),
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: AppTheme.borderColor),
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  isUrl
+                      ? Uri.decodeFull(certUrl.split('/').last)
+                      : (isLocal ? _certFileName! : 'No certificate uploaded yet'),
+                  style: TextStyle(
+                    color: (isUrl || isLocal) ? Colors.green.shade800 : AppTheme.textSecondaryColor,
+                    fontWeight: (isUrl || isLocal) ? FontWeight.bold : FontWeight.normal,
+                    fontSize: 14,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              if (isUrl) ...[
+                IconButton(
+                  icon: const Icon(Icons.remove_red_eye_outlined, color: Colors.blue, size: 20),
+                  onPressed: () {
+                    showDocumentViewer(context, certUrl, 'Uploaded Certificate');
+                  },
+                ),
+              ],
+              if (isUrl || isLocal) ...[
+                IconButton(
+                  icon: const Icon(Icons.delete_outline, color: Colors.red, size: 20),
+                  onPressed: () {
+                    setState(() {
+                      _regCertController.clear();
+                      _certFileBytes = null;
+                      _certFileName = null;
+                      _certFileSizeStr = null;
+                      _uploadedFileSizeStr = null;
+                    });
+                  },
+                ),
+                const SizedBox(width: 8),
+              ],
+              ElevatedButton.icon(
+                onPressed: _pickCertificate,
+                icon: const Icon(Icons.file_present_outlined, size: 16, color: Colors.white),
+                label: const Text('Choose File', style: TextStyle(color: Colors.white, fontSize: 13)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.logoRed,
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                ),
+              ),
+            ],
+          ),
+        ),
+        if ((isUrl && _uploadedFileSizeStr != null) || (isLocal && _certFileSizeStr != null)) ...[
+          const SizedBox(height: 6),
+          Padding(
+            padding: const EdgeInsets.only(left: 4.0),
+            child: Text(
+              isLocal
+                  ? 'Selected file size: $_certFileSizeStr (Will upload on save)'
+                  : 'Uploaded file size: $_uploadedFileSizeStr',
+              style: const TextStyle(
+                fontSize: 11,
+                color: Colors.grey,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
   Widget _buildInfoCard(String title, List<Widget> children) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
@@ -210,7 +458,7 @@ class _NurseProfileViewState extends State<NurseProfileView> {
     );
   }
 
-  Widget _buildProfileTextField(String label, TextEditingController controller, IconData icon, {bool isReadOnly = false, bool isNumeric = false, int? maxLength, VoidCallback? onTap}) {
+  Widget _buildProfileTextField(String label, TextEditingController controller, IconData icon, {bool isReadOnly = false, bool isNumeric = false, bool isAlphanumeric = false, int? maxLength, VoidCallback? onTap}) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -226,12 +474,22 @@ class _NurseProfileViewState extends State<NurseProfileView> {
           maxLength: maxLength,
           inputFormatters: isNumeric
               ? [FilteringTextInputFormatter.digitsOnly]
-              : (isReadOnly ? null : [FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z\s./,()\-]'))]),
+              : (isReadOnly ? null : [
+                  FilteringTextInputFormatter.allow(
+                    isAlphanumeric 
+                        ? RegExp(r'[a-zA-Z0-9\s./,()\-]') 
+                        : RegExp(r'[a-zA-Z\s./,()\-]'),
+                  ),
+                ]),
           mouseCursor: onTap != null 
               ? SystemMouseCursors.click 
               : (isReadOnly ? SystemMouseCursors.forbidden : null),
           onTap: onTap,
-          style: TextStyle(color: isReadOnly ? AppTheme.textSecondaryColor.withOpacity(0.7) : AppTheme.textPrimaryColor),
+          style: TextStyle(
+            color: (isReadOnly && onTap == null) 
+                ? AppTheme.textSecondaryColor.withOpacity(0.7) 
+                : AppTheme.textPrimaryColor,
+          ),
           decoration: InputDecoration(
             counterText: '',
             hintText: label,
@@ -271,36 +529,67 @@ class _NurseProfileViewState extends State<NurseProfileView> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Professional Profile',
-                    style: Theme.of(context).textTheme.displayLarge,
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    'Overview of your professional details and settings',
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color: AppTheme.textSecondaryColor,
-                        ),
-                  ),
-                ],
-              ),
-              ElevatedButton.icon(
-                onPressed: () => setState(() => _isEditingProfile = true),
-                icon: const Icon(Icons.edit_outlined, size: 18, color: Colors.white),
-                label: const Text('Edit Profile', style: TextStyle(color: Colors.white)),
-                style: AppTheme.primaryButton.copyWith(
-                  backgroundColor: MaterialStateProperty.all(AppTheme.logoRed),
-                  minimumSize: MaterialStateProperty.all(const Size(0, 48)),
+          isMobile
+              ? Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      'Profile',
+                      style: Theme.of(context).textTheme.displayLarge?.copyWith(fontSize: 24),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Overview of your professional details and settings',
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            color: AppTheme.textSecondaryColor,
+                            fontSize: 12,
+                          ),
+                    ),
+                    const SizedBox(height: 16),
+                    ElevatedButton.icon(
+                      onPressed: () => GoRouter.of(context).go(AppRoutes.nurseProfileEdit),
+                      icon: const Icon(Icons.edit_outlined, size: 18, color: Colors.white),
+                      label: const Text('Edit Profile', style: TextStyle(color: Colors.white)),
+                      style: AppTheme.primaryButton.copyWith(
+                        backgroundColor: MaterialStateProperty.all(AppTheme.logoRed),
+                        minimumSize: MaterialStateProperty.all(const Size(double.infinity, 44)),
+                      ),
+                    ),
+                  ],
+                )
+              : Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Profile',
+                            style: Theme.of(context).textTheme.displayLarge,
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Overview of your professional details and settings',
+                            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                  color: AppTheme.textSecondaryColor,
+                                ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    ElevatedButton.icon(
+                      onPressed: () => GoRouter.of(context).go(AppRoutes.nurseProfileEdit),
+                      icon: const Icon(Icons.edit_outlined, size: 18, color: Colors.white),
+                      label: const Text('Edit Profile', style: TextStyle(color: Colors.white)),
+                      style: AppTheme.primaryButton.copyWith(
+                        backgroundColor: MaterialStateProperty.all(AppTheme.logoRed),
+                        minimumSize: MaterialStateProperty.all(const Size(0, 48)),
+                      ),
+                    ),
+                  ],
                 ),
-              ),
-            ],
-          ),
           const SizedBox(height: 32),
           Container(
             padding: const EdgeInsets.all(AppTheme.paddingLarge),
@@ -318,7 +607,7 @@ class _NurseProfileViewState extends State<NurseProfileView> {
                         shape: BoxShape.circle,
                       ),
                       child: Center(
-                        child: Text(user?.fullname.isNotEmpty == true ? user!.fullname[0].toUpperCase() : 'N', style: const TextStyle(fontSize: 48, fontWeight: FontWeight.bold, color: Colors.white)),
+                        child: Text(user?.rawFullname?.isNotEmpty == true ? user!.rawFullname![0].toUpperCase() : 'N', style: const TextStyle(fontSize: 48, fontWeight: FontWeight.bold, color: Colors.white)),
                       ),
                     ),
                     const SizedBox(width: 32),
@@ -326,7 +615,7 @@ class _NurseProfileViewState extends State<NurseProfileView> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(user?.fullname ?? 'Nurse', style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Color(0xFF2D3748))),
+                          Text(user?.rawFullname ?? 'Nurse', style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Color(0xFF2D3748))),
                           const SizedBox(height: 8),
                           Text(
                             user?.role ?? 'Nurse',
@@ -341,11 +630,12 @@ class _NurseProfileViewState extends State<NurseProfileView> {
                     ),
                   ],
                 ),
-                if (user?.bio != null && user!.bio!.isNotEmpty) ...[
+                 if (user?.bio != null && user!.bio!.isNotEmpty) ...[
                   const SizedBox(height: 24),
                   const Divider(height: 1, color: Color(0xFFE2E8F0)),
                   const SizedBox(height: 20),
-                  _buildDetailRow('Full Name', user?.fullname ?? '-', Icons.person_outline),
+                  _buildDetailRow('Full Name', user?.rawFullname ?? '-', Icons.person_outline),
+                  _buildDetailRow('Staff ID', user?.staffUniqueId ?? '-', Icons.badge_outlined),
                   _buildDetailRow('Email Address', user?.email ?? '-', Icons.alternate_email),
                   _buildDetailRow('Mobile Number', user?.mobile ?? '-', Icons.phone_android_outlined),
                   _buildDetailRow('Bio Summary', user?.bio ?? '-', Icons.description_outlined),
@@ -353,7 +643,8 @@ class _NurseProfileViewState extends State<NurseProfileView> {
                   const SizedBox(height: 24),
                   const Divider(height: 1, color: Color(0xFFE2E8F0)),
                   const SizedBox(height: 20),
-                  _buildDetailRow('Full Name', user?.fullname ?? '-', Icons.person_outline),
+                  _buildDetailRow('Full Name', user?.rawFullname ?? '-', Icons.person_outline),
+                  _buildDetailRow('Staff ID', user?.staffUniqueId ?? '-', Icons.badge_outlined),
                   _buildDetailRow('Email Address', user?.email ?? '-', Icons.alternate_email),
                   _buildDetailRow('Mobile Number', user?.mobile ?? '-', Icons.phone_android_outlined),
                 ],
@@ -361,94 +652,18 @@ class _NurseProfileViewState extends State<NurseProfileView> {
             ),
           ),
           sectionSpacing,
-          if (isMobile) ...[
-            _buildInfoCard('Professional Details', [
-              _buildDetailRow('Qualification', user?.qualification ?? '-', Icons.school_outlined),
-              _buildDetailRow('Nursing Registration Number', user?.nursingRegistrationNumber ?? '-', Icons.badge_outlined),
-              _buildDetailRow(
-                'Years of Experience',
-                user?.yearsOfExperience == null || user?.yearsOfExperience == '0'
-                    ? '-'
-                    : '${user!.yearsOfExperience} years',
-                Icons.work_history_outlined,
-              ),
-            ]),
-            sectionSpacing,
-            _buildInfoCard('Availability / Duty', [
-              _buildDetailRow(
-                'Working Days',
-                (user?.workingDays == null || user!.workingDays!.isEmpty)
-                    ? '-'
-                    : user!.workingDays!.join(', '),
-                Icons.calendar_month_outlined,
-              ),
-              _buildDetailRow('Shift Hours', '${user?.shiftStartTime ?? "-"} to ${user?.shiftEndTime ?? "-"}', Icons.access_time_rounded),
-              _buildDetailRow('Shift Type', user?.shiftType ?? '-', Icons.event_available_outlined),
-              _buildDetailRow(
-                'Weekly Off',
-                (user?.weeklyOffDays ?? []).isEmpty
-                    ? '-'
-                    : user!.weeklyOffDays!.join(', '),
-                Icons.event_busy_outlined,
-              ),
-              _buildDetailRow(
-                'Specific Leave Dates',
-                (user?.specificLeaveDates == null || user!.specificLeaveDates!.isEmpty)
-                    ? '-'
-                    : user!.specificLeaveDates!.join(', '),
-                Icons.calendar_today_outlined,
-              ),
-            ]),
-
-          ] else ...[
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: _buildInfoCard('Professional Details', [
-                    _buildDetailRow('Qualification', user?.qualification ?? '-', Icons.school_outlined),
-                    _buildDetailRow('Nursing Registration Number', user?.nursingRegistrationNumber ?? '-', Icons.badge_outlined),
-                    _buildDetailRow(
-                      'Years of Experience',
-                      user?.yearsOfExperience == null || user?.yearsOfExperience == '0'
-                          ? '-'
-                          : '${user!.yearsOfExperience} years',
-                      Icons.work_history_outlined,
-                    ),
-                  ]),
-                ),
-                const SizedBox(width: 24),
-                Expanded(
-                  child: _buildInfoCard('Availability / Duty', [
-                    _buildDetailRow(
-                      'Working Days',
-                      (user?.workingDays == null || user!.workingDays!.isEmpty)
-                          ? '-'
-                          : user!.workingDays!.join(', '),
-                      Icons.calendar_month_outlined,
-                    ),
-                    _buildDetailRow('Shift Hours', '${user?.shiftStartTime ?? "-"} to ${user?.shiftEndTime ?? "-"}', Icons.access_time_rounded),
-                    _buildDetailRow('Shift Type', user?.shiftType ?? '-', Icons.event_available_outlined),
-                    _buildDetailRow(
-                      'Weekly Off',
-                      (user?.weeklyOffDays ?? []).isEmpty
-                          ? '-'
-                          : user!.weeklyOffDays!.join(', '),
-                      Icons.event_busy_outlined,
-                    ),
-                    _buildDetailRow(
-                      'Specific Leave Dates',
-                      (user?.specificLeaveDates == null || user!.specificLeaveDates!.isEmpty)
-                          ? '-'
-                          : user!.specificLeaveDates!.join(', '),
-                      Icons.calendar_today_outlined,
-                    ),
-                  ]),
-                ),
-              ],
+          _buildInfoCard('Professional Details', [
+            _buildDetailRow('Qualification', user?.qualification ?? '-', Icons.school_outlined),
+            _buildDetailRow('Nursing Registration Number', user?.nursingRegistrationNumber ?? '-', Icons.badge_outlined),
+            _buildDetailRow(
+              'Years of Experience',
+              user?.yearsOfExperience == null || user?.yearsOfExperience == '0'
+                  ? '-'
+                  : '${user!.yearsOfExperience} years',
+              Icons.work_history_outlined,
             ),
-
-          ],
+            _buildCertificateDisplayRow(user?.registrationCertificate),
+          ]),
         ],
       ),
     );
@@ -493,7 +708,7 @@ class _NurseProfileViewState extends State<NurseProfileView> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
              InkWell(
-               onTap: () => setState(() => _isEditingProfile = false),
+               onTap: () => GoRouter.of(context).go(AppRoutes.nurseProfile),
                borderRadius: BorderRadius.circular(8),
                child: const Padding(
                  padding: EdgeInsets.symmetric(vertical: 8),
@@ -554,8 +769,8 @@ class _NurseProfileViewState extends State<NurseProfileView> {
                         ),
                         child: Center(
                           child: Text(
-                            user?.fullname.isNotEmpty == true
-                                ? user!.fullname[0].toUpperCase()
+                            user?.rawFullname?.isNotEmpty == true
+                                ? user!.rawFullname![0].toUpperCase()
                                 : 'N',
                             style: const TextStyle(
                               fontSize: 36,
@@ -570,12 +785,24 @@ class _NurseProfileViewState extends State<NurseProfileView> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            user?.fullname ?? 'Nurse',
+                            user?.rawFullname ?? 'Nurse',
                             style: const TextStyle(
                               fontSize: 20,
                               fontWeight: FontWeight.bold,
+                              color: AppTheme.textPrimaryColor,
                             ),
                           ),
+                          if (user?.staffUniqueId != null && user!.staffUniqueId!.isNotEmpty) ...[
+                            const SizedBox(height: 2),
+                            Text(
+                              user!.staffUniqueId!,
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: AppTheme.textSecondaryColor,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
                           const SizedBox(height: 2),
                           Text(
                             user?.role ?? 'Nurse',
@@ -629,11 +856,16 @@ class _NurseProfileViewState extends State<NurseProfileView> {
                       TextFormField(
                         controller: _bioController,
                         maxLines: 3,
+                        maxLength: 255,
+                        inputFormatters: [
+                          FilteringTextInputFormatter.deny(RegExp(r'[0-9]')),
+                        ],
                         style: const TextStyle(
                           color: AppTheme.textPrimaryColor,
                           fontWeight: FontWeight.normal,
                         ),
                         decoration: InputDecoration(
+                          counterText: '',
                           hintText: 'Share a brief summary of your expertise...',
                           hintStyle: const TextStyle(color: Colors.grey, fontSize: 14),
                           fillColor: AppTheme.backgroundColor,
@@ -666,21 +898,23 @@ class _NurseProfileViewState extends State<NurseProfileView> {
             sectionSpacing,
             sectionCard('1', 'Professional Details', const Color(0xFF0D5D9A), [
               if (isMobile) ...[
-                _buildProfileTextField('Qualification', _qualController, Icons.school_outlined),
+                _buildProfileTextField('Qualification', _qualController, Icons.school_outlined, maxLength: 100),
                 fieldSpacing,
-                _buildProfileTextField('Nursing Registration Number', _nursingLicenseController, Icons.badge_outlined),
+                 _buildProfileTextField('Nursing Registration Number', _nursingLicenseController, Icons.badge_outlined, isAlphanumeric: true, maxLength: 20),
                 fieldSpacing,
                 _buildProfileTextField('Years of Experience', _yearsExpController, Icons.work_outline, isNumeric: true, maxLength: 2),
+                fieldSpacing,
+                _buildCertificateUploadField(),
               ] else ...[
                 Row(
                   children: [
                     Expanded(
-                      child: _buildProfileTextField('Qualification', _qualController, Icons.school_outlined),
+                      child: _buildProfileTextField('Qualification', _qualController, Icons.school_outlined, maxLength: 100),
                     ),
                     const SizedBox(width: 16),
-                    Expanded(
-                      child: _buildProfileTextField('Nursing Registration Number', _nursingLicenseController, Icons.badge_outlined),
-                    ),
+                     Expanded(
+                       child: _buildProfileTextField('Nursing Registration Number', _nursingLicenseController, Icons.badge_outlined, isAlphanumeric: true, maxLength: 20),
+                     ),
                   ],
                 ),
                 fieldSpacing,
@@ -693,159 +927,18 @@ class _NurseProfileViewState extends State<NurseProfileView> {
                     const Expanded(child: SizedBox()), // Placeholder for balance
                   ],
                 ),
+                fieldSpacing,
+                _buildCertificateUploadField(),
               ],
             ]),
-            sectionSpacing,
-            sectionCard('2', 'Availability / Duty', AppTheme.successColor, [
-               const Text('Weekly Schedule (Tap: Available ↔ Leave)', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black)),
-              const SizedBox(height: 10),
-              Wrap(
-                spacing: 8, runSpacing: 8,
-                children: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((day) {
-                  final isAvailable = _availableDays?.contains(day) ?? false;
-                  Color bgColor = isAvailable ? AppTheme.successColor : Colors.red.shade400;
-                  return MouseRegion(
-                    cursor: SystemMouseCursors.click,
-                    child: GestureDetector(
-                      onTap: () => setLocalState(() {
-                        if (isAvailable) {
-                          _availableDays?.remove(day);
-                        } else {
-                          (_availableDays ??= []).add(day);
-                        }
-                        final allDays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-                        _weeklyOffDays = allDays.where((d) => !(_availableDays?.contains(d) ?? false)).toList();
-                      }),
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 180),
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                        decoration: BoxDecoration(
-                          color: bgColor,
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(color: bgColor),
-                        ),
-                        child: Text(day, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
-                      ),
-                    ),
-                  );
-                }).toList(),
-              ),
-              fieldSpacing,
-              if (isMobile) ...[
-                _buildProfileTextField('Shift Start Time', _slotStartController, Icons.login_outlined, isReadOnly: true, onTap: () => _selectTime(context, _slotStartController)),
-                fieldSpacing,
-                _buildProfileTextField('Shift End Time', _slotEndController, Icons.logout_outlined, isReadOnly: true, onTap: () => _selectTime(context, _slotEndController)),
-                fieldSpacing,
-                 Column(
-                   crossAxisAlignment: CrossAxisAlignment.start,
-                   children: [
-                     const Text('Shift Type', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black, fontSize: 14)),
-                    const SizedBox(height: 8),
-                    DropdownButtonFormField<String>(
-                      value: _shiftTypeController.text.isNotEmpty && ['Day Shift', 'Night Shift', 'Rotational', 'Evening Shift'].contains(_shiftTypeController.text) ? _shiftTypeController.text : 'Day Shift',
-                      style: const TextStyle(fontSize: 14, color: AppTheme.textPrimaryColor),
-                      decoration: InputDecoration(
-                        prefixIcon: const Icon(Icons.event_available_outlined, size: 20),
-                        fillColor: AppTheme.backgroundColor,
-                        filled: true,
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide(color: Colors.grey.withOpacity(0.2))),
-                        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide(color: Colors.grey.withOpacity(0.2))),
-                      ),
-                      items: ['Day Shift', 'Night Shift', 'Rotational', 'Evening Shift'].map((v) => DropdownMenuItem(value: v, child: Text(v, style: const TextStyle(fontSize: 14)))).toList(),
-                      onChanged: (v) => _shiftTypeController.text = v ?? '',
-                    ),
-                  ],
-                ),
-              ] else ...[
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(child: _buildProfileTextField('Shift Start Time', _slotStartController, Icons.login_outlined, isReadOnly: true, onTap: () => _selectTime(context, _slotStartController))),
-                    const SizedBox(width: 16),
-                    Expanded(child: _buildProfileTextField('Shift End Time', _slotEndController, Icons.logout_outlined, isReadOnly: true, onTap: () => _selectTime(context, _slotEndController))),
-                    const SizedBox(width: 16),
-                    Expanded(
-                       child: Column(
-                         crossAxisAlignment: CrossAxisAlignment.start,
-                         children: [
-                           const Text('Shift Type', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black, fontSize: 14)),
-                          const SizedBox(height: 8),
-                          DropdownButtonFormField<String>(
-                            value: _shiftTypeController.text.isNotEmpty && ['Day Shift', 'Night Shift', 'Rotational', 'Evening Shift'].contains(_shiftTypeController.text) ? _shiftTypeController.text : 'Day Shift',
-                            style: const TextStyle(fontSize: 14, color: AppTheme.textPrimaryColor),
-                            decoration: InputDecoration(
-                              prefixIcon: const Icon(Icons.event_available_outlined, size: 20),
-                              fillColor: AppTheme.backgroundColor,
-                              filled: true,
-                              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide(color: Colors.grey.withOpacity(0.2))),
-                              enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide(color: Colors.grey.withOpacity(0.2))),
-                            ),
-                            items: ['Day Shift', 'Night Shift', 'Rotational', 'Evening Shift'].map((v) => DropdownMenuItem(value: v, child: Text(v, style: const TextStyle(fontSize: 14)))).toList(),
-                            onChanged: (v) => _shiftTypeController.text = v ?? '',
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-              fieldSpacing,
-               const Text('Particular Leave Dates', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black)),
-              const SizedBox(height: 10),
-              Wrap(
-                spacing: 8, runSpacing: 8,
-                children: [
-                  ...(_specificLeaveDates ?? []).map((d) => Chip(
-                    label: Text(d, style: const TextStyle(fontSize: 12)),
-                    backgroundColor: Colors.orange.shade50,
-                    side: BorderSide(color: Colors.orange.shade200),
-                    deleteIcon: const Icon(Icons.close, size: 14),
-                    onDeleted: () => setLocalState(() => _specificLeaveDates?.remove(d)),
-                  )),
-                  GestureDetector(
-                    onTap: () async {
-                      final picked = await showDatePicker(
-                        context: context,
-                        initialDate: DateTime.now(),
-                        firstDate: DateTime.now(),
-                        lastDate: DateTime.now().add(const Duration(days: 730)),
-                      );
-                      if (picked != null) {
-                        final f = '${picked.day.toString().padLeft(2, '0')}/${picked.month.toString().padLeft(2, '0')}/${picked.year}';
-                        if (!(_specificLeaveDates?.contains(f) ?? false)) {
-                          setLocalState(() => (_specificLeaveDates ??= []).add(f));
-                        }
-                      }
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                      decoration: BoxDecoration(
-                        color: AppTheme.backgroundColor,
-                        borderRadius: BorderRadius.circular(20),
-                        border: Border.all(color: AppTheme.primaryColor.withOpacity(0.5)),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.add, size: 15, color: AppTheme.primaryColor),
-                          const SizedBox(width: 4),
-                          Text('Add Date', style: TextStyle(fontSize: 12, color: AppTheme.primaryColor, fontWeight: FontWeight.bold)),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ]),
+
 
             const SizedBox(height: 48),
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
                 OutlinedButton(
-                  onPressed: () => setState(() => _isEditingProfile = false),
+                  onPressed: () => GoRouter.of(context).go(AppRoutes.nurseProfile),
                   style: AppTheme.cancelButton.copyWith(
                     minimumSize: MaterialStateProperty.all(const Size(120, 48)),
                   ),

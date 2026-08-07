@@ -88,6 +88,9 @@ class _NewPatientRegistrationViewState
   final TextEditingController _physicalActivityController =
       TextEditingController();
   String? _selectedGender;
+  PatientModel? _matchedExistingPatient;
+  String _lastCheckedPhone = '';
+  bool _isSearchingPhone = false;
 
   // Form keys for validation
   final _formKeyStep1 = GlobalKey<FormState>();
@@ -100,10 +103,207 @@ class _NewPatientRegistrationViewState
     if (widget.existingPatient != null) {
       _preFillForm();
     }
+    _phoneController.addListener(_onPhoneChanged);
+  }
+
+  void _onPhoneChanged() {
+    final phone = _phoneController.text.trim();
+    if (phone.length == 10) {
+      if (phone != _lastCheckedPhone) {
+        _lastCheckedPhone = phone;
+        _checkExistingPatient(phone);
+      }
+    } else {
+      if (phone.length < 10) {
+        _lastCheckedPhone = '';
+      }
+    }
+  }
+
+  Future<void> _checkExistingPatient(String phone) async {
+    setState(() {
+      _isSearchingPhone = true;
+    });
+
+    try {
+      final patients = await _patientController.fetchPatientsByPhone(phone);
+      if (patients.isNotEmpty) {
+        if (mounted) {
+          _showExistingPatientsDialog(patients);
+        }
+      }
+    } catch (e) {
+      print('Error searching patient by phone: $e');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSearchingPhone = false;
+        });
+      }
+    }
+  }
+
+  void _showExistingPatientsDialog(List<PatientModel> patients) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+          backgroundColor: Colors.white,
+          title: Row(
+            children: [
+              const Icon(
+                Icons.info_outline,
+                color: AppTheme.primaryColor,
+                size: 24,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                'Existing Patient Found',
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.bold,
+                      color: AppTheme.primaryColor,
+                    ),
+              ),
+            ],
+          ),
+          content: Container(
+            width: 480,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  patients.length == 1
+                      ? 'A patient is already registered with this mobile number.'
+                      : 'Multiple patients are registered with this mobile number.',
+                  style: const TextStyle(
+                    fontSize: 14,
+                    color: AppTheme.textPrimaryColor,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Flexible(
+                  child: SingleChildScrollView(
+                    child: Column(
+                      children: patients.map((patient) {
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 12),
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF1F5F9),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: AppTheme.borderColor),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              _buildDialogDetailRow('Patient ID', patient.patientId ?? '-'),
+                              _buildDialogDetailRow('Name', patient.name),
+                              _buildDialogDetailRow('Gender / Age', '${patient.gender} / ${patient.age} years'),
+                              _buildDialogDetailRow('DOB', patient.dob),
+                              _buildDialogDetailRow('Address', patient.fullAddress),
+                              const SizedBox(height: 12),
+                              SizedBox(
+                                width: double.infinity,
+                                height: 40,
+                                child: ElevatedButton(
+                                  onPressed: () {
+                                    Navigator.of(context).pop(patient);
+                                  },
+                                  style: AppTheme.primaryButton.copyWith(
+                                    minimumSize: MaterialStateProperty.all(const Size(0, 40)),
+                                    padding: MaterialStateProperty.all(const EdgeInsets.symmetric(horizontal: 16, vertical: 8)),
+                                  ),
+                                  child: const Text('Load Patient Details'),
+                                ),
+                              ),
+                            ],
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Would you like to load their details to edit/complete their profile, or register a new patient instead?',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: AppTheme.textSecondaryColor,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            OutlinedButton(
+              onPressed: () {
+                Navigator.of(context).pop(null);
+              },
+              style: AppTheme.cancelButton.copyWith(
+                minimumSize: MaterialStateProperty.all(const Size(180, 48)),
+              ),
+              child: const Text('Register New Patient'),
+            ),
+          ],
+        );
+      },
+    ).then((selectedPatient) {
+      if (selectedPatient != null && selectedPatient is PatientModel) {
+        setState(() {
+          _matchedExistingPatient = selectedPatient;
+          _loadMatchedPatient(selectedPatient);
+        });
+      }
+    });
+  }
+
+  Widget _buildDialogDetailRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4.0),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 100,
+            child: Text(
+              label,
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: AppTheme.textSecondaryColor,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              value.isNotEmpty ? value : '-',
+              style: const TextStyle(
+                fontSize: 12,
+                color: AppTheme.textPrimaryColor,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   void _preFillForm() {
-    final p = widget.existingPatient!;
+    _loadPatientIntoForm(widget.existingPatient!);
+  }
+
+  void _loadMatchedPatient(PatientModel p) {
+    _loadPatientIntoForm(p);
+  }
+
+  void _loadPatientIntoForm(PatientModel p) {
     _nameController.text = p.name;
     _dobController.text = p.dob;
     _ageController.text = p.age > 0 ? p.age.toString() : '';
@@ -120,12 +320,8 @@ class _NewPatientRegistrationViewState
     _emergencyContactPhoneController.text = p.emergencyContactPhone;
 
     // Medical Intake
-    _bpSystolicController.text = p.bpSystolic > 0
-        ? p.bpSystolic.toString()
-        : '';
-    _bpDiastolicController.text = p.bpDiastolic > 0
-        ? p.bpDiastolic.toString()
-        : '';
+    _bpSystolicController.text = p.bpSystolic > 0 ? p.bpSystolic.toString() : '';
+    _bpDiastolicController.text = p.bpDiastolic > 0 ? p.bpDiastolic.toString() : '';
     _sugarController.text = p.sugar > 0 ? p.sugar.toString() : '';
     _tempController.text = p.temp > 0 ? p.temp.toString() : '';
     _heightController.text = p.height > 0 ? p.height.toString() : '';
@@ -137,12 +333,8 @@ class _NewPatientRegistrationViewState
     _historyController.text = p.history;
 
     // Lifestyle
-    _smokingStatus = (p.smokingStatus == 'No' || p.smokingStatus.isEmpty)
-        ? 'Never'
-        : p.smokingStatus;
-    _alcoholStatus = (p.alcoholStatus == 'No' || p.alcoholStatus.isEmpty)
-        ? 'Never'
-        : p.alcoholStatus;
+    _smokingStatus = (p.smokingStatus == 'No' || p.smokingStatus.isEmpty) ? 'Never' : p.smokingStatus;
+    _alcoholStatus = (p.alcoholStatus == 'No' || p.alcoholStatus.isEmpty) ? 'Never' : p.alcoholStatus;
     _occupationController.text = p.occupation;
     _hobbiesController.text = p.hobbies;
     _foodHabitsController.text = p.foodHabits;
@@ -180,6 +372,111 @@ class _NewPatientRegistrationViewState
     super.dispose();
   }
 
+  bool _hasFormChanges() {
+    final existing = _matchedExistingPatient ?? widget.existingPatient;
+    if (existing != null) {
+      final p = existing;
+      final bool basicInfoChanged = _nameController.text != p.name ||
+          _dobController.text != p.dob ||
+          _ageController.text != (p.age > 0 ? p.age.toString() : '') ||
+          _phoneController.text != p.phone ||
+          _emailController.text != p.email ||
+          _addressController.text != p.address ||
+          _addressLine2Controller.text != p.addressLine2 ||
+          _selectedDistrict != (p.district.isNotEmpty ? p.district : null) ||
+          _pincodeController.text != p.pincode ||
+          _selectedGender != p.gender;
+
+      final bool emergencyContactChanged = _emergencyContactNameController.text != p.emergencyContactName ||
+          _emergencyContactRelationController.text != p.emergencyContactRelation ||
+          _emergencyContactPhoneController.text != p.emergencyContactPhone;
+
+      final bool vitalsChanged = _bpSystolicController.text != (p.bpSystolic > 0 ? p.bpSystolic.toString() : '') ||
+          _bpDiastolicController.text != (p.bpDiastolic > 0 ? p.bpDiastolic.toString() : '') ||
+          _sugarController.text != (p.sugar > 0 ? p.sugar.toString() : '') ||
+          _tempController.text != (p.temp > 0 ? p.temp.toString() : '') ||
+          _heightController.text != (p.height > 0 ? p.height.toString() : '') ||
+          _weightController.text != (p.weight > 0 ? p.weight.toString() : '') ||
+          _bloodGroupController.text != p.bloodGroup ||
+          _allergiesController.text != p.allergies ||
+          _chronicConditionsController.text != p.chronicConditions ||
+          _complaintsController.text != p.complaints ||
+          _historyController.text != p.history;
+
+      final bool lifestyleChanged = _smokingStatus != ((p.smokingStatus == 'No' || p.smokingStatus.isEmpty) ? 'Never' : p.smokingStatus) ||
+          _alcoholStatus != ((p.alcoholStatus == 'No' || p.alcoholStatus.isEmpty) ? 'Never' : p.alcoholStatus) ||
+          _occupationController.text != p.occupation ||
+          _hobbiesController.text != p.hobbies ||
+          _foodHabitsController.text != p.foodHabits ||
+          _physicalActivityController.text != p.physicalActivity;
+
+      return basicInfoChanged || emergencyContactChanged || vitalsChanged || lifestyleChanged;
+    } else {
+      return _nameController.text.trim().isNotEmpty ||
+          _dobController.text.trim().isNotEmpty ||
+          _ageController.text.trim().isNotEmpty ||
+          _phoneController.text.trim().isNotEmpty ||
+          _emailController.text.trim().isNotEmpty ||
+          _addressController.text.trim().isNotEmpty ||
+          _addressLine2Controller.text.trim().isNotEmpty ||
+          _selectedDistrict != null ||
+          _pincodeController.text.trim().isNotEmpty ||
+          _selectedGender != null ||
+          _emergencyContactNameController.text.trim().isNotEmpty ||
+          _bpSystolicController.text.trim().isNotEmpty ||
+          _bpDiastolicController.text.trim().isNotEmpty ||
+          _sugarController.text.trim().isNotEmpty ||
+          _tempController.text.trim().isNotEmpty ||
+          _heightController.text.trim().isNotEmpty ||
+          _weightController.text.trim().isNotEmpty ||
+          _bloodGroupController.text.trim().isNotEmpty ||
+          _allergiesController.text.trim().isNotEmpty ||
+          _chronicConditionsController.text.trim().isNotEmpty ||
+          _complaintsController.text.trim().isNotEmpty ||
+          _historyController.text.trim().isNotEmpty ||
+          _smokingStatus != null ||
+          _alcoholStatus != null ||
+          _occupationController.text.trim().isNotEmpty ||
+          _hobbiesController.text.trim().isNotEmpty ||
+          _foodHabitsController.text.trim().isNotEmpty ||
+          _physicalActivityController.text.trim().isNotEmpty;
+    }
+  }
+
+  void _showDiscardDialog() {
+    if (!_hasFormChanges()) {
+      widget.onBack();
+      return;
+    }
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text('Discard Changes?'),
+        content: const Text(
+          'You have unsaved changes. Are you sure you want to discard them and go back?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.of(context).pop();
+              widget.onBack();
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.dangerColor,
+            ),
+            child: const Text('Discard', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final bool isMobile = MediaQuery.of(context).size.width < 900;
@@ -201,7 +498,7 @@ class _NewPatientRegistrationViewState
             children: [
               // Back Button & Header
               InkWell(
-                onTap: widget.onBack,
+                onTap: _showDiscardDialog,
                 child: const Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -230,8 +527,8 @@ class _NewPatientRegistrationViewState
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          widget.existingPatient != null
-                              ? (widget.existingPatient!.isQuickRegister
+                          (widget.existingPatient != null || _matchedExistingPatient != null)
+                              ? (((widget.existingPatient?.isQuickRegister ?? _matchedExistingPatient?.isQuickRegister ?? false))
                                     ? 'Complete Patient Profile'
                                     : 'Edit Patient Profile')
                               : 'New Patient Registration',
@@ -242,7 +539,7 @@ class _NewPatientRegistrationViewState
                         if (!isMobile) ...[
                           const SizedBox(height: 4),
                           Text(
-                            widget.existingPatient != null
+                            (widget.existingPatient != null || _matchedExistingPatient != null)
                                 ? 'Update patient information and medical history'
                                 : 'Register a new patient with AI-powered voice input',
                             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
@@ -456,9 +753,11 @@ class _NewPatientRegistrationViewState
                           ),
                           LengthLimitingTextInputFormatter(30),
                         ],
-                        validator: (val) => val == null || val.isEmpty
-                            ? 'Please enter Full Name'
-                            : null,
+                        validator: (val) {
+                          if (val == null || val.trim().isEmpty) return 'Please enter Full Name';
+                          if (val.trim().length < 3) return 'Name must be at least 3 characters';
+                          return null;
+                        },
                       ),
                     ],
                   ),
@@ -474,6 +773,9 @@ class _NewPatientRegistrationViewState
                         controller: _emailController,
                         hint: 'Enter Email Address',
                         keyboardType: TextInputType.emailAddress,
+                        inputFormatters: [
+                          LengthLimitingTextInputFormatter(254),
+                        ],
                         validator: (val) {
                           if (val == null || val.trim().isEmpty) {
                             return 'Please enter Email Address';
@@ -548,6 +850,19 @@ class _NewPatientRegistrationViewState
                         controller: _phoneController,
                         hint: 'Enter Mobile Number',
                         keyboardType: TextInputType.phone,
+                        suffixIcon: _isSearchingPhone
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: Padding(
+                                  padding: EdgeInsets.all(12.0),
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: AppTheme.primaryColor,
+                                  ),
+                                ),
+                              )
+                            : null,
                         inputFormatters: [
                           FilteringTextInputFormatter.digitsOnly,
                           LengthLimitingTextInputFormatter(10),
@@ -579,9 +894,11 @@ class _NewPatientRegistrationViewState
                           ),
                           LengthLimitingTextInputFormatter(30),
                         ],
-                        validator: (val) => val == null || val.isEmpty
-                            ? 'Please enter Emergency Contact Name'
-                            : null,
+                        validator: (val) {
+                          if (val == null || val.trim().isEmpty) return 'Please enter Emergency Contact Name';
+                          if (val.trim().length < 3) return 'Name must be at least 3 characters';
+                          return null;
+                        },
                       ),
                     ],
                   ),
@@ -603,6 +920,7 @@ class _NewPatientRegistrationViewState
                           FilteringTextInputFormatter.allow(
                             RegExp(r'[a-zA-Z\s]'),
                           ),
+                          LengthLimitingTextInputFormatter(20),
                         ],
                         validator: (val) => val == null || val.isEmpty
                             ? 'Please enter Relation'
@@ -651,6 +969,9 @@ class _NewPatientRegistrationViewState
                       _buildTextField(
                         controller: _addressController,
                         hint: 'Enter Address Line 1',
+                        inputFormatters: [
+                          LengthLimitingTextInputFormatter(255),
+                        ],
                         validator: (val) => val == null || val.isEmpty
                             ? 'Please enter Address Line 1'
                             : null,
@@ -723,67 +1044,34 @@ class _NewPatientRegistrationViewState
 
             // Action Buttons
             if (isMobile)
-              Column(
-                children: [
-                  SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton.icon(
-                      onPressed: () {},
-                      icon: const Icon(Icons.description_outlined, size: 18),
-                      label: const Text('Save as Draft'),
-                      style: AppTheme.outlinedButton.copyWith(
-                        minimumSize: MaterialStateProperty.all(const Size(0, 52)),
-                      ),
-                    ),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: () {
+                    if (_formKeyStep1.currentState!.validate()) {
+                      setState(() => _currentStep = 2);
+                    }
+                  },
+                  style: AppTheme.logoRedButton.copyWith(
+                    minimumSize: MaterialStateProperty.all(const Size(0, 52)),
                   ),
-                  const SizedBox(height: 12),
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton(
-                      onPressed: () {
-                        if (_formKeyStep1.currentState!.validate()) {
-                          setState(() => _currentStep = 2);
-                        }
-                      },
-                      style: AppTheme.logoRedButton.copyWith(
-                        minimumSize: MaterialStateProperty.all(const Size(0, 52)),
+                  child: const Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        'Next',
+                        style: TextStyle(fontWeight: FontWeight.bold),
                       ),
-                      child: const Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Text(
-                            'Next',
-                            style: TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                          SizedBox(width: 12),
-                          Icon(Icons.arrow_forward_rounded, size: 18),
-                        ],
-                      ),
-                    ),
+                      SizedBox(width: 12),
+                      Icon(Icons.arrow_forward_rounded, size: 18),
+                    ],
                   ),
-                ],
+                ),
               )
             else
               Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                mainAxisAlignment: MainAxisAlignment.end,
                 children: [
-                  OutlinedButton.icon(
-                    onPressed: () {},
-                    icon: const Icon(Icons.description_outlined, size: 18),
-                    label: const Text('Save as Draft'),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: const Color(0xFF4A5568),
-                      side: const BorderSide(color: Color(0xFFE2E8F0)),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 24,
-                        vertical: 20,
-                      ),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      minimumSize: const Size(0, 52),
-                    ),
-                  ),
                   ElevatedButton(
                     onPressed: () {
                       if (_formKeyStep1.currentState!.validate()) {
@@ -951,7 +1239,17 @@ class _NewPatientRegistrationViewState
                       keyboardType: TextInputType.number,
                       inputFormatters: [
                         FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
+                        LengthLimitingTextInputFormatter(6),
                       ],
+                      validator: (val) {
+                        final text = val?.trim() ?? '';
+                        if (text.isEmpty) return null;
+                        final num = double.tryParse(text);
+                        if (num == null) return 'Enter a number';
+                        if (num == 0) return 'Cannot be 0';
+                        if (num < 30 || num > 300) return '30 to 300 cm';
+                        return null;
+                      },
                     ),
                   ),
                   const SizedBox(width: 16),
@@ -962,7 +1260,17 @@ class _NewPatientRegistrationViewState
                       keyboardType: TextInputType.number,
                       inputFormatters: [
                         FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
+                        LengthLimitingTextInputFormatter(6),
                       ],
+                      validator: (val) {
+                        final text = val?.trim() ?? '';
+                        if (text.isEmpty) return null;
+                        final num = double.tryParse(text);
+                        if (num == null) return 'Enter a number';
+                        if (num == 0) return 'Cannot be 0';
+                        if (num < 1 || num > 600) return '1 to 600 kg';
+                        return null;
+                      },
                     ),
                   ),
                 ],
@@ -976,7 +1284,19 @@ class _NewPatientRegistrationViewState
                       controller: _bpSystolicController,
                       hint: 'Enter Systolic',
                       keyboardType: TextInputType.number,
-                      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                      inputFormatters: [
+                        FilteringTextInputFormatter.digitsOnly,
+                        LengthLimitingTextInputFormatter(3),
+                      ],
+                      validator: (val) {
+                        final text = val?.trim() ?? '';
+                        if (text.isEmpty) return null;
+                        final num = int.tryParse(text);
+                        if (num == null) return 'Enter a number';
+                        if (num == 0) return 'Cannot be 0';
+                        if (num < 70 || num > 300) return '70 to 300';
+                        return null;
+                      },
                     ),
                   ),
                   const Padding(
@@ -991,7 +1311,19 @@ class _NewPatientRegistrationViewState
                       controller: _bpDiastolicController,
                       hint: 'Enter Diastolic',
                       keyboardType: TextInputType.number,
-                      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                      inputFormatters: [
+                        FilteringTextInputFormatter.digitsOnly,
+                        LengthLimitingTextInputFormatter(3),
+                      ],
+                      validator: (val) {
+                        final text = val?.trim() ?? '';
+                        if (text.isEmpty) return null;
+                        final num = int.tryParse(text);
+                        if (num == null) return 'Enter a number';
+                        if (num == 0) return 'Cannot be 0';
+                        if (num < 40 || num > 180) return '40 to 180';
+                        return null;
+                      },
                     ),
                   ),
                 ],
@@ -1012,7 +1344,17 @@ class _NewPatientRegistrationViewState
                             FilteringTextInputFormatter.allow(
                               RegExp(r'[0-9.]'),
                             ),
+                            LengthLimitingTextInputFormatter(6),
                           ],
+                          validator: (val) {
+                            final text = val?.trim() ?? '';
+                            if (text.isEmpty) return null;
+                            final num = double.tryParse(text);
+                            if (num == null) return 'Enter a number';
+                            if (num == 0) return 'Cannot be 0';
+                            if (num < 30 || num > 600) return '30 to 600';
+                            return null;
+                          },
                         ),
                       ],
                     ),
@@ -1031,7 +1373,17 @@ class _NewPatientRegistrationViewState
                             FilteringTextInputFormatter.allow(
                               RegExp(r'[0-9.]'),
                             ),
+                            LengthLimitingTextInputFormatter(5),
                           ],
+                          validator: (val) {
+                            final text = val?.trim() ?? '';
+                            if (text.isEmpty) return null;
+                            final num = double.tryParse(text);
+                            if (num == null) return 'Enter a number';
+                            if (num == 0) return 'Cannot be 0';
+                            if (num < 90 || num > 115) return '90 to 115 °F';
+                            return null;
+                          },
                         ),
                       ],
                     ),
@@ -1056,6 +1408,10 @@ class _NewPatientRegistrationViewState
                 controller: _allergiesController,
                 hint: 'Enter Allergies',
                 maxLines: 2,
+                inputFormatters: [
+                  FilteringTextInputFormatter.deny(RegExp(r'[0-9]')),
+                  LengthLimitingTextInputFormatter(100),
+                ],
               ),
               const SizedBox(height: 16),
               _buildLabel('Chronic Conditions'),
@@ -1063,6 +1419,10 @@ class _NewPatientRegistrationViewState
                 controller: _chronicConditionsController,
                 hint: 'Enter Pre-existing Conditions',
                 maxLines: 2,
+                inputFormatters: [
+                  FilteringTextInputFormatter.deny(RegExp(r'[0-9]')),
+                  LengthLimitingTextInputFormatter(100),
+                ],
               ),
             ] else ...[
               Row(
@@ -1083,7 +1443,17 @@ class _NewPatientRegistrationViewState
                                   FilteringTextInputFormatter.allow(
                                     RegExp(r'[0-9.]'),
                                   ),
+                                  LengthLimitingTextInputFormatter(6),
                                 ],
+                                validator: (val) {
+                                  final text = val?.trim() ?? '';
+                                  if (text.isEmpty) return null;
+                                  final num = double.tryParse(text);
+                                  if (num == null) return 'Enter a number';
+                                  if (num == 0) return 'Cannot be 0';
+                                  if (num < 30 || num > 300) return '30 to 300 cm';
+                                  return null;
+                                },
                               ),
                             ),
                             const SizedBox(width: 16),
@@ -1096,7 +1466,17 @@ class _NewPatientRegistrationViewState
                                   FilteringTextInputFormatter.allow(
                                     RegExp(r'[0-9.]'),
                                   ),
+                                  LengthLimitingTextInputFormatter(6),
                                 ],
+                                validator: (val) {
+                                  final text = val?.trim() ?? '';
+                                  if (text.isEmpty) return null;
+                                  final num = double.tryParse(text);
+                                  if (num == null) return 'Enter a number';
+                                  if (num == 0) return 'Cannot be 0';
+                                  if (num < 1 || num > 600) return '1 to 600 kg';
+                                  return null;
+                                },
                               ),
                             ),
                           ],
@@ -1119,7 +1499,17 @@ class _NewPatientRegistrationViewState
                                 keyboardType: TextInputType.number,
                                 inputFormatters: [
                                   FilteringTextInputFormatter.digitsOnly,
+                                  LengthLimitingTextInputFormatter(3),
                                 ],
+                                validator: (val) {
+                                  final text = val?.trim() ?? '';
+                                  if (text.isEmpty) return null;
+                                  final num = int.tryParse(text);
+                                  if (num == null) return 'Enter a number';
+                                  if (num == 0) return 'Cannot be 0';
+                                  if (num < 70 || num > 300) return '70 to 300';
+                                  return null;
+                                },
                               ),
                             ),
                             const SizedBox(width: 16),
@@ -1130,7 +1520,17 @@ class _NewPatientRegistrationViewState
                                 keyboardType: TextInputType.number,
                                 inputFormatters: [
                                   FilteringTextInputFormatter.digitsOnly,
+                                  LengthLimitingTextInputFormatter(3),
                                 ],
+                                validator: (val) {
+                                  final text = val?.trim() ?? '';
+                                  if (text.isEmpty) return null;
+                                  final num = int.tryParse(text);
+                                  if (num == null) return 'Enter a number';
+                                  if (num == 0) return 'Cannot be 0';
+                                  if (num < 40 || num > 180) return '40 to 180';
+                                  return null;
+                                },
                               ),
                             ),
                           ],
@@ -1159,7 +1559,17 @@ class _NewPatientRegistrationViewState
                                   FilteringTextInputFormatter.allow(
                                     RegExp(r'[0-9.]'),
                                   ),
+                                  LengthLimitingTextInputFormatter(6),
                                 ],
+                                validator: (val) {
+                                  final text = val?.trim() ?? '';
+                                  if (text.isEmpty) return null;
+                                  final num = double.tryParse(text);
+                                  if (num == null) return 'Enter a number';
+                                  if (num == 0) return 'Cannot be 0';
+                                  if (num < 30 || num > 600) return '30 to 600';
+                                  return null;
+                                },
                               ),
                             ),
                             const SizedBox(width: 16),
@@ -1172,7 +1582,17 @@ class _NewPatientRegistrationViewState
                                   FilteringTextInputFormatter.allow(
                                     RegExp(r'[0-9.]'),
                                   ),
+                                  LengthLimitingTextInputFormatter(5),
                                 ],
+                                validator: (val) {
+                                  final text = val?.trim() ?? '';
+                                  if (text.isEmpty) return null;
+                                  final num = double.tryParse(text);
+                                  if (num == null) return 'Enter a number';
+                                  if (num == 0) return 'Cannot be 0';
+                                  if (num < 90 || num > 115) return '90 to 115 °F';
+                                  return null;
+                                },
                               ),
                             ),
                           ],
@@ -1223,6 +1643,10 @@ class _NewPatientRegistrationViewState
                           controller: _allergiesController,
                           hint: 'Enter Allergies',
                           maxLines: 2,
+                          inputFormatters: [
+                            FilteringTextInputFormatter.deny(RegExp(r'[0-9]')),
+                            LengthLimitingTextInputFormatter(100),
+                          ],
                         ),
                       ],
                     ),
@@ -1237,6 +1661,10 @@ class _NewPatientRegistrationViewState
                           controller: _chronicConditionsController,
                           hint: 'Enter Pre-existing Conditions',
                           maxLines: 2,
+                          inputFormatters: [
+                            FilteringTextInputFormatter.deny(RegExp(r'[0-9]')),
+                            LengthLimitingTextInputFormatter(100),
+                          ],
                         ),
                       ],
                     ),
@@ -1251,15 +1679,23 @@ class _NewPatientRegistrationViewState
               controller: _complaintsController,
               hint: 'Describe current health complaints...',
               maxLines: 4,
+              inputFormatters: [
+                FilteringTextInputFormatter.deny(RegExp(r'[0-9]')),
+                FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z ,.\-/()]')),
+                LengthLimitingTextInputFormatter(500),
+              ],
             ),
             const SizedBox(height: 24),
 
             // Past Medical History
-            _buildLabelAccent('Past Medical History'),
+            _buildLabel('Past Medical History'),
             _buildTextField(
               controller: _historyController,
               hint: 'Previous conditions, surgeries, medications...',
               maxLines: 4,
+              inputFormatters: [
+                LengthLimitingTextInputFormatter(500),
+              ],
             ),
             const SizedBox(height: 48),
 
@@ -1267,45 +1703,22 @@ class _NewPatientRegistrationViewState
             if (isMobile)
               Column(
                 children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: () => setState(() => _currentStep = 1),
-                          icon: const Icon(Icons.arrow_back_rounded, size: 18),
-                          label: const Text('Back'),
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: const Color(0xFF4A5568),
-                            side: const BorderSide(color: Color(0xFFE2E8F0)),
-                            padding: const EdgeInsets.symmetric(vertical: 16),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            minimumSize: const Size(0, 52),
-                          ),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: () => setState(() => _currentStep = 1),
+                      icon: const Icon(Icons.arrow_back_rounded, size: 18),
+                      label: const Text('Back'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: const Color(0xFF4A5568),
+                        side: const BorderSide(color: Color(0xFFE2E8F0)),
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8),
                         ),
+                        minimumSize: const Size(0, 52),
                       ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: () {},
-                          icon: const Icon(
-                            Icons.description_outlined,
-                            size: 18,
-                          ),
-                          label: const Text('Save'),
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: const Color(0xFF4A5568),
-                            side: const BorderSide(color: Color(0xFFE2E8F0)),
-                            padding: const EdgeInsets.symmetric(vertical: 16),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            minimumSize: const Size(0, 52),
-                          ),
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
                   const SizedBox(height: 12),
                   SizedBox(
@@ -1347,24 +1760,6 @@ class _NewPatientRegistrationViewState
                     onPressed: () => setState(() => _currentStep = 1),
                     icon: const Icon(Icons.arrow_back_rounded, size: 18),
                     label: const Text('Back'),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: const Color(0xFF4A5568),
-                      side: const BorderSide(color: Color(0xFFE2E8F0)),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 24,
-                        vertical: 20,
-                      ),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      minimumSize: const Size(0, 52),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  OutlinedButton.icon(
-                    onPressed: () {},
-                    icon: const Icon(Icons.description_outlined, size: 18),
-                    label: const Text('Save as Draft'),
                     style: OutlinedButton.styleFrom(
                       foregroundColor: const Color(0xFF4A5568),
                       side: const BorderSide(color: Color(0xFFE2E8F0)),
@@ -1457,6 +1852,7 @@ class _NewPatientRegistrationViewState
                   FilteringTextInputFormatter.allow(
                     RegExp(r'[a-zA-Z\s]'),
                   ),
+                  LengthLimitingTextInputFormatter(50),
                 ],
               ),
               const SizedBox(height: 20),
@@ -1468,6 +1864,7 @@ class _NewPatientRegistrationViewState
                   FilteringTextInputFormatter.allow(
                     RegExp(r'[a-zA-Z\s]'),
                   ),
+                  LengthLimitingTextInputFormatter(50),
                 ],
               ),
             ] else
@@ -1485,6 +1882,7 @@ class _NewPatientRegistrationViewState
                             FilteringTextInputFormatter.allow(
                               RegExp(r'[a-zA-Z\s]'),
                             ),
+                            LengthLimitingTextInputFormatter(50),
                           ],
                         ),
                       ],
@@ -1503,6 +1901,7 @@ class _NewPatientRegistrationViewState
                             FilteringTextInputFormatter.allow(
                               RegExp(r'[a-zA-Z\s]'),
                             ),
+                            LengthLimitingTextInputFormatter(50),
                           ],
                         ),
                       ],
@@ -1518,6 +1917,10 @@ class _NewPatientRegistrationViewState
               controller: _foodHabitsController,
               hint: 'Dietary preferences and eating patterns...',
               maxLines: 4,
+              inputFormatters: [
+                FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z ,.\-/()]')),
+                LengthLimitingTextInputFormatter(100),
+              ],
             ),
             const SizedBox(height: 24),
 
@@ -1582,6 +1985,10 @@ class _NewPatientRegistrationViewState
               controller: _physicalActivityController,
               hint: 'Describe daily physical activities...',
               maxLines: 1,
+              inputFormatters: [
+                FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z ,.\-/()]')),
+                LengthLimitingTextInputFormatter(100),
+              ],
             ),
             const SizedBox(height: 48),
 
@@ -1589,45 +1996,22 @@ class _NewPatientRegistrationViewState
             if (isMobile)
               Column(
                 children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: () => setState(() => _currentStep = 2),
-                          icon: const Icon(Icons.arrow_back_rounded, size: 18),
-                          label: const Text('Back'),
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: const Color(0xFF4A5568),
-                            side: const BorderSide(color: Color(0xFFE2E8F0)),
-                            padding: const EdgeInsets.symmetric(vertical: 16),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            minimumSize: const Size(0, 52),
-                          ),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: () => setState(() => _currentStep = 2),
+                      icon: const Icon(Icons.arrow_back_rounded, size: 18),
+                      label: const Text('Back'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: const Color(0xFF4A5568),
+                        side: const BorderSide(color: Color(0xFFE2E8F0)),
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8),
                         ),
+                        minimumSize: const Size(0, 52),
                       ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: () {},
-                          icon: const Icon(
-                            Icons.description_outlined,
-                            size: 18,
-                          ),
-                          label: const Text('Save as Draft'),
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: const Color(0xFF4A5568),
-                            side: const BorderSide(color: Color(0xFFE2E8F0)),
-                            padding: const EdgeInsets.symmetric(vertical: 16),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            minimumSize: const Size(0, 52),
-                          ),
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
                   const SizedBox(height: 12),
                   SizedBox(
@@ -1663,24 +2047,6 @@ class _NewPatientRegistrationViewState
                     onPressed: () => setState(() => _currentStep = 2),
                     icon: const Icon(Icons.arrow_back_rounded, size: 18),
                     label: const Text('Back'),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: const Color(0xFF4A5568),
-                      side: const BorderSide(color: Color(0xFFE2E8F0)),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 24,
-                        vertical: 20,
-                      ),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      minimumSize: const Size(0, 52),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  OutlinedButton.icon(
-                    onPressed: () {},
-                    icon: const Icon(Icons.description_outlined, size: 18),
-                    label: const Text('Save as Draft'),
                     style: OutlinedButton.styleFrom(
                       foregroundColor: const Color(0xFF4A5568),
                       side: const BorderSide(color: Color(0xFFE2E8F0)),
@@ -2100,42 +2466,22 @@ class _NewPatientRegistrationViewState
           if (isMobile)
             Column(
               children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: () => setState(() => _currentStep = 3),
-                        icon: const Icon(Icons.arrow_back_rounded, size: 18),
-                        label: const Text('Back'),
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: const Color(0xFF4A5568),
-                          side: const BorderSide(color: Color(0xFFE2E8F0)),
-                          padding: const EdgeInsets.symmetric(vertical: 16),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          minimumSize: const Size(0, 52),
-                        ),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () => setState(() => _currentStep = 3),
+                    icon: const Icon(Icons.arrow_back_rounded, size: 18),
+                    label: const Text('Back'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFF4A5568),
+                      side: const BorderSide(color: Color(0xFFE2E8F0)),
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
                       ),
+                      minimumSize: const Size(0, 52),
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: () {},
-                        icon: const Icon(Icons.description_outlined, size: 18),
-                        label: const Text('Save as Draft'),
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: const Color(0xFF4A5568),
-                          side: const BorderSide(color: Color(0xFFE2E8F0)),
-                          padding: const EdgeInsets.symmetric(vertical: 16),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          minimumSize: const Size(0, 52),
-                        ),
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
                 const SizedBox(height: 12),
                 SizedBox(
@@ -2175,24 +2521,6 @@ class _NewPatientRegistrationViewState
                   onPressed: () => setState(() => _currentStep = 3),
                   icon: const Icon(Icons.arrow_back_rounded, size: 18),
                   label: const Text('Back'),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: const Color(0xFF4A5568),
-                    side: const BorderSide(color: Color(0xFFE2E8F0)),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 24,
-                      vertical: 20,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    minimumSize: const Size(0, 52),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                OutlinedButton.icon(
-                  onPressed: () {},
-                  icon: const Icon(Icons.description_outlined, size: 18),
-                  label: const Text('Save as Draft'),
                   style: OutlinedButton.styleFrom(
                     foregroundColor: const Color(0xFF4A5568),
                     side: const BorderSide(color: Color(0xFFE2E8F0)),
@@ -2367,6 +2695,7 @@ class _NewPatientRegistrationViewState
     required TextEditingController controller,
     required String hint,
     IconData? icon,
+    Widget? suffixIcon,
     int maxLines = 1,
     VoidCallback? onTap,
     bool readOnly = false,
@@ -2386,9 +2715,9 @@ class _NewPatientRegistrationViewState
       decoration: InputDecoration(
         hintText: hint,
         hintStyle: const TextStyle(color: Color(0xFFCBD5E0), fontSize: 13),
-        suffixIcon: icon != null
+        suffixIcon: suffixIcon ?? (icon != null
             ? Icon(icon, color: const Color(0xFFCBD5E0), size: 18)
-            : null,
+            : null),
         filled: true,
         fillColor: AppTheme.backgroundColor,
         border: OutlineInputBorder(
@@ -2438,10 +2767,55 @@ class _NewPatientRegistrationViewState
     );
   }
 
+  void _validateVitals() {
+    final sysText = _bpSystolicController.text.trim();
+    final diaText = _bpDiastolicController.text.trim();
+    final sugarText = _sugarController.text.trim();
+    final tempText = _tempController.text.trim();
+    final heightText = _heightController.text.trim();
+    final weightText = _weightController.text.trim();
+
+    if (sysText.isNotEmpty) {
+      final val = int.tryParse(sysText);
+      if (val == null) throw 'BP Systolic must be an integer';
+      if (val == 0) throw 'BP Systolic cannot be 0';
+      if (val < 90 || val > 300) throw 'BP Systolic must be between 90 and 300 mmHg';
+    }
+    if (diaText.isNotEmpty) {
+      final val = int.tryParse(diaText);
+      if (val == null) throw 'BP Diastolic must be an integer';
+      if (val == 0) throw 'BP Diastolic cannot be 0';
+      if (val < 50 || val > 180) throw 'BP Diastolic must be between 50 and 180 mmHg';
+    }
+    if (sugarText.isNotEmpty) {
+      final val = double.tryParse(sugarText);
+      if (val == null) throw 'Sugar Level must be a number';
+      if (val == 0) throw 'Sugar Level cannot be 0';
+      if (val < 30 || val > 600) throw 'Sugar Level must be between 30 and 600 mg/dL';
+    }
+    if (tempText.isNotEmpty) {
+      final val = double.tryParse(tempText);
+      if (val == null) throw 'Temperature must be a number';
+      if (val == 0) throw 'Temperature cannot be 0';
+      if (val < 90 || val > 115) throw 'Temperature must be between 90 and 115 °F';
+    }
+    if (heightText.isNotEmpty) {
+      final val = double.tryParse(heightText);
+      if (val == null) throw 'Height must be a number';
+      if (val == 0) throw 'Height cannot be 0';
+    }
+    if (weightText.isNotEmpty) {
+      final val = double.tryParse(weightText);
+      if (val == null) throw 'Weight must be a number';
+      if (val == 0) throw 'Weight cannot be 0';
+    }
+  }
+
   Future<void> _submitPatientData() async {
     setState(() => _isSubmitting = true);
 
     try {
+      _validateVitals();
       if (_nameController.text.trim().isEmpty ||
           _dobController.text.trim().isEmpty ||
           _phoneController.text.trim().isEmpty ||
@@ -2451,9 +2825,10 @@ class _NewPatientRegistrationViewState
         );
       }
 
+      final existing = _matchedExistingPatient ?? widget.existingPatient;
       final patient = PatientModel(
-        id: widget.existingPatient?.id,
-        patientId: widget.existingPatient?.patientId,
+        id: existing?.id,
+        patientId: existing?.patientId,
         name: _nameController.text.trim(),
         dob: _dobController.text.trim(),
         age: int.tryParse(_ageController.text.trim()) ?? 0,
@@ -2485,13 +2860,13 @@ class _NewPatientRegistrationViewState
         hobbies: _hobbiesController.text.trim(),
         foodHabits: _foodHabitsController.text.trim(),
         physicalActivity: _physicalActivityController.text.trim(),
-        isQuickRegister: widget.existingPatient?.isQuickRegister ?? false,
+        isQuickRegister: existing?.isQuickRegister ?? false,
       );
 
-      if (widget.existingPatient != null &&
-          widget.existingPatient!.id != null) {
+      if (existing != null &&
+          existing.id != null) {
         await _patientController.updatePatient(
-          widget.existingPatient!.id!,
+          existing.id!,
           patient,
         );
       } else {
@@ -2502,7 +2877,7 @@ class _NewPatientRegistrationViewState
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              widget.existingPatient != null
+              existing != null
                   ? 'Patient profile completed successfully!'
                   : 'Patient registered successfully!',
             ),

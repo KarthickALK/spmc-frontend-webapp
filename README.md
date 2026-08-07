@@ -1,2 +1,2 @@
-# spmc-frontend-webapp
-Web build
+# spmc-frontend-app
+Frontend

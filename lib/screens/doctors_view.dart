@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import '../widgets/custom_dropdown_search.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import '../utils/app_theme.dart';
@@ -23,6 +25,7 @@ class _DoctorsViewState extends State<DoctorsView> {
   List<AppointmentModel> _appointments = [];
   String _searchQuery = '';
   String _selectedDepartment = 'All';
+  final TextEditingController _searchCtrl = TextEditingController();
 
   final ScrollController _deptScrollController = ScrollController();
   bool _showRightArrow = false;
@@ -33,6 +36,7 @@ class _DoctorsViewState extends State<DoctorsView> {
     super.initState();
     _loadDoctors();
     _deptScrollController.addListener(_scrollListener);
+    _searchCtrl.addListener(() => setState(() {}));
     // Delay check to see if content is scrollable initially
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollListener());
   }
@@ -41,6 +45,7 @@ class _DoctorsViewState extends State<DoctorsView> {
   void dispose() {
     _deptScrollController.removeListener(_scrollListener);
     _deptScrollController.dispose();
+    _searchCtrl.dispose();
     super.dispose();
   }
 
@@ -130,12 +135,29 @@ class _DoctorsViewState extends State<DoctorsView> {
               ],
             ),
             child: TextField(
+              controller: _searchCtrl,
               onChanged: (val) => setState(() => _searchQuery = val),
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
                 hintText: 'Search doctors by name or specialization...',
-                prefixIcon: Icon(Icons.search, size: 20),
+                prefixIcon: const Icon(Icons.search, size: 20),
+                suffixIcon: _searchCtrl.text.isNotEmpty
+                    ? MouseRegion(
+                        cursor: SystemMouseCursors.click,
+                        child: GestureDetector(
+                          onTap: () {
+                            _searchCtrl.clear();
+                            setState(() => _searchQuery = '');
+                          },
+                          child: const Icon(
+                            Icons.close,
+                            size: 18,
+                            color: AppTheme.textSecondaryColor,
+                          ),
+                        ),
+                      )
+                    : null,
                 border: InputBorder.none,
-                contentPadding: EdgeInsets.symmetric(vertical: 14),
+                contentPadding: const EdgeInsets.symmetric(vertical: 14),
               ),
             ),
           ),
@@ -228,26 +250,26 @@ class _DoctorsViewState extends State<DoctorsView> {
                         ),
                       )
                     else
-                      Wrap(
-                        spacing: 24,
-                        runSpacing: 24,
-                        children: filteredDoctors.map((doc) {
-                          double cardWidth;
-                          if (isMobile) {
-                            cardWidth = MediaQuery.of(context).size.width - (isMobile ? 32 : 48);
-                          } else {
-                            final screenWidth = MediaQuery.of(context).size.width - 260 - 48; // Sidebar + Screen Padding
-                            if (screenWidth > 1200) {
-                              cardWidth = (screenWidth - (2 * 24)) / 3;
-                            } else {
-                              cardWidth = (screenWidth - 24) / 2;
-                            }
-                          }
-                          return SizedBox(
-                            width: cardWidth,
-                            child: _buildDoctorCard(doc, isMobile),
+                      LayoutBuilder(
+                        builder: (context, constraints) {
+                          final availableWidth = constraints.maxWidth;
+                          return Wrap(
+                            spacing: 24,
+                            runSpacing: 24,
+                            children: filteredDoctors.map((doc) {
+                              double cardWidth;
+                              if (isMobile) {
+                                cardWidth = availableWidth;
+                              } else {
+                                cardWidth = (availableWidth - (2 * 24) - 2) / 3;
+                              }
+                              return SizedBox(
+                                width: cardWidth,
+                                child: _buildDoctorCard(doc, isMobile),
+                              );
+                            }).toList(),
                           );
-                        }).toList(),
+                        },
                       ),
                     const SizedBox(height: 40),
                   ],
@@ -410,6 +432,9 @@ class _DoctorsViewState extends State<DoctorsView> {
       ..sort((a, b) => weekDaysOrder.indexOf(a).compareTo(weekDaysOrder.indexOf(b)));
     final String availability = availabilityList.isNotEmpty ? availabilityList.join(', ') : '-';
     final String nextAvailable = _getNextAvailable(doctor); 
+    final String shiftTime = (doctor.slotStartTime != null && doctor.slotEndTime != null)
+        ? '${doctor.slotStartTime} - ${doctor.slotEndTime}'
+        : '-';
 
     return Container(
       margin: isMobile ? const EdgeInsets.only(bottom: 24) : EdgeInsets.zero,
@@ -429,6 +454,7 @@ class _DoctorsViewState extends State<DoctorsView> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
+
         children: [
           // Top Row: Avatar, Name, Rating
           Row(
@@ -459,13 +485,19 @@ class _DoctorsViewState extends State<DoctorsView> {
                         color: AppTheme.textPrimaryColor,
                       ),
                     ),
-                    Text(
-                      doctor.specialization ?? '-',
-                      style: const TextStyle(
-                        color: AppTheme.textSecondaryColor,
-                        fontSize: 13,
+                    if (doctor.staffUniqueId != null &&
+                        doctor.staffUniqueId!.isNotEmpty) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        doctor.staffUniqueId!,
+                        style: const TextStyle(
+                          color: AppTheme.textSecondaryColor,
+                          fontSize: 11,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
-                    ),
+                    ],
                   ],
                 ),
               ),
@@ -626,6 +658,38 @@ class _DoctorsViewState extends State<DoctorsView> {
 
           const SizedBox(height: 16),
 
+          // Shift Timing
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.blue.withOpacity(0.05),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Shift Timing',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: Colors.blueAccent,
+                  ),
+                ),
+                Text(
+                  shiftTime,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13,
+                    color: Colors.blueAccent,
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 16),
+
           // Next Available Label
           Row(
             children: [
@@ -687,7 +751,7 @@ class _DoctorsViewState extends State<DoctorsView> {
 
     final List<Map<String, dynamic>> specializations = await _adminController.fetchSpecializations();
     
-    final fullnameController = TextEditingController(text: doctor.fullname);
+    final fullnameController = TextEditingController(text: doctor.rawFullname);
     final emailController = TextEditingController(text: doctor.email);
     final mobileController = TextEditingController(text: doctor.mobile ?? '');
     final experienceController = TextEditingController(text: doctor.experience ?? '');
@@ -700,6 +764,7 @@ class _DoctorsViewState extends State<DoctorsView> {
     final feeController = TextEditingController(text: doctor.consultationFee ?? '');
     final expertiseController = TextEditingController(text: doctor.areasOfExpertise ?? '');
     final startTimeController = TextEditingController(text: doctor.slotStartTime ?? '');
+    final endTimeController = TextEditingController(text: doctor.slotEndTime ?? '');
     
     int? selectedSpecId = doctor.specializationId;
     List<String> selectedDays = List<String>.from(doctor.availableDays ?? []);
@@ -741,50 +806,82 @@ class _DoctorsViewState extends State<DoctorsView> {
                       topRight: Radius.circular(24),
                     ),
                   ),
-                  child: Row(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      CircleAvatar(
-                        radius: 32,
-                        backgroundColor: AppTheme.primaryColor.withOpacity(0.1),
-                        child: Text(
-                          doctor.fullname.substring(0, 1).toUpperCase(),
-                          style: const TextStyle(
-                            color: AppTheme.primaryColor,
-                            fontSize: 24,
-                            fontWeight: FontWeight.bold,
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            canEdit ? 'Edit Doctor Profile' : 'Doctor Professional Profile',
+                            style: const TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.bold,
+                              color: AppTheme.textPrimaryColor,
+                            ),
                           ),
-                        ),
+                          IconButton(
+                            onPressed: () => Navigator.pop(context),
+                            icon: const Icon(Icons.close),
+                            style: IconButton.styleFrom(
+                              backgroundColor: Colors.white,
+                              padding: const EdgeInsets.all(8),
+                            ),
+                          ),
+                        ],
                       ),
-                      const SizedBox(width: 20),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              canEdit ? 'Edit Doctor Profile' : 'Doctor Professional Profile',
+                      const SizedBox(height: 16),
+                      Row(
+                        children: [
+                          CircleAvatar(
+                            radius: 32,
+                            backgroundColor: AppTheme.primaryColor.withOpacity(0.1),
+                            child: Text(
+                              doctor.fullname.substring(0, 1).toUpperCase(),
                               style: const TextStyle(
-                                fontSize: 20,
+                                color: AppTheme.primaryColor,
+                                fontSize: 24,
                                 fontWeight: FontWeight.bold,
-                                color: AppTheme.textPrimaryColor,
                               ),
                             ),
-                            Text(
-                              'Dr. ${doctor.fullname} • ${doctor.specialization ?? "General Medicine"}',
-                              style: const TextStyle(
-                                fontSize: 14,
-                                color: AppTheme.textSecondaryColor,
-                              ),
+                          ),
+                          const SizedBox(width: 20),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Dr. ${doctor.fullname}',
+                                  style: const TextStyle(
+                                    fontSize: 22,
+                                    fontWeight: FontWeight.bold,
+                                    color: AppTheme.textPrimaryColor,
+                                  ),
+                                ),
+                                if (doctor.staffUniqueId != null && doctor.staffUniqueId!.isNotEmpty) ...[
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    doctor.staffUniqueId!,
+                                    style: const TextStyle(
+                                      fontSize: 14,
+                                      color: AppTheme.textSecondaryColor,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                ],
+                                const SizedBox(height: 2),
+                                Text(
+                                  doctor.specialization ?? 'General Medicine',
+                                  style: const TextStyle(
+                                    fontSize: 16,
+                                    color: AppTheme.textSecondaryColor,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ],
                             ),
-                          ],
-                        ),
-                      ),
-                      IconButton(
-                        onPressed: () => Navigator.pop(context),
-                        icon: const Icon(Icons.close),
-                        style: IconButton.styleFrom(
-                          backgroundColor: Colors.white,
-                          padding: const EdgeInsets.all(8),
-                        ),
+                          ),
+                        ],
                       ),
                     ],
                   ),
@@ -806,13 +903,19 @@ class _DoctorsViewState extends State<DoctorsView> {
                               children: [
                                 Expanded(
                                   child: canEdit 
-                                    ? _buildModernField('Full Name', fullnameController)
+                                    ? _buildModernField('Full Name', fullnameController,
+                                        maxLength: 50,
+                                        inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z ]'))],
+                                      )
                                     : _buildDetailItem('Full Name', fullnameController.text),
                                 ),
                                 const SizedBox(width: 16),
                                 Expanded(
                                   child: canEdit
-                                    ? _buildModernField('Email', emailController)
+                                    ? _buildModernField('Email', emailController,
+                                        maxLength: 50,
+                                        inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z0-9@._\-]'))],
+                                      )
                                     : _buildDetailItem('Email', emailController.text),
                                 ),
                               ],
@@ -822,13 +925,20 @@ class _DoctorsViewState extends State<DoctorsView> {
                               children: [
                                 Expanded(
                                   child: canEdit
-                                    ? _buildModernField('Mobile Number', mobileController)
+                                    ? _buildModernField('Mobile Number', mobileController,
+                                        isNumeric: true,
+                                        maxLength: 10,
+                                        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                                      )
                                     : _buildDetailItem('Mobile Number', mobileController.text),
                                 ),
                                 const SizedBox(width: 16),
                                 Expanded(
                                   child: canEdit
-                                    ? _buildModernField('Medical License', licenseController)
+                                    ? _buildModernField('Medical License', licenseController,
+                                        maxLength: 20,
+                                        inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z0-9/\-]'))],
+                                      )
                                     : _buildDetailItem('Medical License', licenseController.text),
                                 ),
                               ],
@@ -869,28 +979,43 @@ class _DoctorsViewState extends State<DoctorsView> {
                               children: [
                                 Expanded(
                                   child: canEdit
-                                    ? _buildModernField('Experience (years)', experienceController)
+                                    ? _buildModernField('Experience (years)', experienceController,
+                                        isNumeric: true,
+                                        maxLength: 2,
+                                        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                                      )
                                     : _buildDetailItem('Experience', '${experienceController.text} years'),
                                 ),
                                 const SizedBox(width: 16),
                                 Expanded(
                                   child: canEdit
-                                    ? _buildModernField('Patients Attended', patientsController, isNumeric: true)
+                                    ? _buildModernField('Patients Attended', patientsController,
+                                        isNumeric: true,
+                                        maxLength: 6,
+                                        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                                      )
                                     : _buildDetailItem('Patients Attended', patientsController.text),
                                 ),
                               ],
                             ),
                             const SizedBox(height: 16),
                             canEdit
-                              ? _buildModernField('Qualification', qualificationController)
+                              ? _buildModernField('Qualification', qualificationController,
+                                  maxLength: 100,
+                                  inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z .,()]'))],
+                                )
                               : _buildDetailItem('Qualification', qualificationController.text),
                             const SizedBox(height: 16),
                             canEdit
-                              ? _buildModernField('Areas of Expertise', expertiseController, hint: 'Comma separated')
+                              ? _buildModernField('Areas of Expertise', expertiseController,
+                                  hint: 'Comma separated',
+                                  maxLength: 100,
+                                  inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z ,]'))],
+                                )
                               : _buildDetailItem('Areas of Expertise', expertiseController.text),
                             const SizedBox(height: 16),
                             canEdit
-                              ? _buildModernField('Bio', bioController, maxLines: 3)
+                              ? _buildModernField('Bio', bioController, maxLines: 3, maxLength: 500)
                               : _buildDetailItem('Bio', bioController.text),
                           ],
                         ),
@@ -906,13 +1031,19 @@ class _DoctorsViewState extends State<DoctorsView> {
                               children: [
                                 Expanded(
                                   child: canEdit
-                                    ? _buildModernField('Clinic Name', clinicNameController)
+                                    ? _buildModernField('Clinic Name', clinicNameController,
+                                        maxLength: 60,
+                                        inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z .]'))],
+                                      )
                                     : _buildDetailItem('Clinic Name', clinicNameController.text),
                                 ),
                                 const SizedBox(width: 16),
                                 Expanded(
                                   child: canEdit
-                                    ? _buildModernField('Clinic Location', clinicLocationController)
+                                    ? _buildModernField('Clinic Location', clinicLocationController,
+                                        maxLength: 80,
+                                        inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z0-9 ,.-]'))],
+                                      )
                                     : _buildDetailItem('Clinic Location', clinicLocationController.text),
                                 ),
                               ],
@@ -922,17 +1053,50 @@ class _DoctorsViewState extends State<DoctorsView> {
                               children: [
                                 Expanded(
                                   child: canEdit
-                                    ? _buildModernField('Consultation Fee', feeController)
+                                    ? _buildModernField('Consultation Fee', feeController,
+                                        isNumeric: true,
+                                        maxLength: 8,
+                                        inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9.]'))],
+                                      )
                                     : _buildDetailItem('Consultation Fee', feeController.text),
                                 ),
                                 const SizedBox(width: 16),
                                 Expanded(
                                   child: canEdit
-                                    ? _buildModernField('Slot Start Time', startTimeController, hint: 'e.g. 9:30 AM')
-                                    : _buildDetailItem('Consultation Hours', 'Starts at ${startTimeController.text}'),
+                                    ? _buildModernField('Slot Start Time', startTimeController,
+                                        hint: 'e.g. 9:30 AM',
+                                        maxLength: 10,
+                                        inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9: AaPpMm]'))],
+                                      )
+                                    : _buildDetailItem(
+                                        'Consultation Hours',
+                                        startTimeController.text.isNotEmpty && endTimeController.text.isNotEmpty
+                                            ? '${startTimeController.text} to ${endTimeController.text}'
+                                            : startTimeController.text.isNotEmpty
+                                                ? 'Starts at ${startTimeController.text}'
+                                                : 'Not Provided',
+                                      ),
                                 ),
                               ],
                             ),
+                            if (canEdit) ...[
+                              const SizedBox(height: 16),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: _buildModernField('Slot End Time', endTimeController,
+                                      hint: 'e.g. 5:30 PM',
+                                      maxLength: 10,
+                                      inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9: AaPpMm]'))],
+                                    ),
+                                  ),
+                                  const SizedBox(width: 16),
+                                  const Expanded(
+                                    child: SizedBox.shrink(),
+                                  ),
+                                ],
+                              ),
+                            ],
                             const SizedBox(height: 20),
                             if (!canEdit)
                               _buildDetailItem('Available Days', selectedDays.isNotEmpty ? selectedDays.join(', ') : 'Not Provided')
@@ -1024,6 +1188,7 @@ class _DoctorsViewState extends State<DoctorsView> {
                                 bio: bioController.text,
                                 availableDays: selectedDays,
                                 slotStartTime: startTimeController.text,
+                                slotEndTime: endTimeController.text,
                                 clinicName: clinicNameController.text,
                                 clinicLocation: clinicLocationController.text,
                                 consultationFee: double.tryParse(feeController.text.replaceAll(RegExp(r'[^0-9.]'), '')),
@@ -1143,7 +1308,7 @@ class _DoctorsViewState extends State<DoctorsView> {
     );
   }
 
-  Widget _buildModernField(String label, TextEditingController controller, {bool isNumeric = false, int maxLines = 1, String? hint, bool enabled = true}) {
+  Widget _buildModernField(String label, TextEditingController controller, {bool isNumeric = false, int maxLines = 1, String? hint, bool enabled = true, List<TextInputFormatter>? inputFormatters, int? maxLength}) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8.0),
       child: Column(
@@ -1163,10 +1328,13 @@ class _DoctorsViewState extends State<DoctorsView> {
             readOnly: !enabled,
             keyboardType: isNumeric ? TextInputType.number : TextInputType.text,
             maxLines: maxLines,
+            maxLength: maxLength,
+            inputFormatters: inputFormatters,
             style: const TextStyle(color: AppTheme.textPrimaryColor, fontSize: 14),
             decoration: InputDecoration(
               hintText: hint,
               isDense: true,
+              counterText: maxLength != null ? '' : null,
               contentPadding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(10),
@@ -1197,45 +1365,21 @@ class _DoctorsViewState extends State<DoctorsView> {
   }) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            label,
-            style: const TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              color: AppTheme.textSecondaryColor,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            decoration: BoxDecoration(
-              color: onChanged != null ? Colors.grey.shade50 : Colors.grey.shade100,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: AppTheme.borderColor.withOpacity(0.8)),
-            ),
-            child: DropdownButtonHideUnderline(
-              child: DropdownButton<int>(
-                isExpanded: true,
-                value: value,
-                style: const TextStyle(color: AppTheme.textPrimaryColor, fontSize: 14),
-                disabledHint: value != null 
-                  ? Text(
-                      items.firstWhere((s) => s['id'] == value)['name'],
-                      style: const TextStyle(color: AppTheme.textPrimaryColor),
-                    )
-                  : null,
-                items: items.map((s) => DropdownMenuItem<int>(
-                  value: s['id'],
-                  child: Text(s['name']),
-                )).toList(),
-                onChanged: onChanged,
-              ),
-            ),
-          ),
-        ],
+      child: CustomDropdownSearch(
+        label: label,
+        value: value?.toString(),
+        dropdownMap: {
+          for (var item in items) item['id'].toString(): item['name'].toString()
+        },
+        onChanged: onChanged == null
+            ? null
+            : (val) {
+                if (val != null) {
+                  onChanged(int.tryParse(val));
+                } else {
+                  onChanged(null);
+                }
+              },
       ),
     );
   }
@@ -1313,7 +1457,7 @@ class _DoctorsViewState extends State<DoctorsView> {
     return DateTime(date.year, date.month, date.day, hour, minute);
   }
 
-  Widget _buildDialogField(String label, TextEditingController controller, {bool isNumeric = false, int maxLines = 1, String? hint, bool enabled = true}) {
+  Widget _buildDialogField(String label, TextEditingController controller, {bool isNumeric = false, int maxLines = 1, String? hint, bool enabled = true, List<TextInputFormatter>? inputFormatters, int? maxLength}) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8.0),
       child: Column(
@@ -1325,10 +1469,13 @@ class _DoctorsViewState extends State<DoctorsView> {
             readOnly: !enabled,
             keyboardType: isNumeric ? TextInputType.number : TextInputType.text,
             maxLines: maxLines,
+            maxLength: maxLength,
+            inputFormatters: inputFormatters,
             style: const TextStyle(color: Colors.black87, fontSize: 14),
             decoration: InputDecoration(
               hintText: hint,
               isDense: true,
+              counterText: maxLength != null ? '' : null,
               contentPadding: const EdgeInsets.symmetric(vertical: 12),
               border: enabled ? null : InputBorder.none,
               filled: enabled,

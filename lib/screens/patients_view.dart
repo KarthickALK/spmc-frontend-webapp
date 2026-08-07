@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import '../widgets/custom_dropdown_search.dart';
 import '../utils/app_theme.dart';
 import 'package:flutter/services.dart';
@@ -24,6 +25,7 @@ class PatientsView extends StatefulWidget {
   final Function(PatientModel) onCompleteProfile;
   final Function(PatientModel) onBookAppointment;
   final VoidCallback? onRefresh;
+  final PatientModel? initialSelectedPatient;
 
   const PatientsView({
     Key? key,
@@ -34,6 +36,7 @@ class PatientsView extends StatefulWidget {
     required this.onCompleteProfile,
     required this.onBookAppointment,
     this.onRefresh,
+    this.initialSelectedPatient,
   }) : super(key: key);
 
   @override
@@ -44,6 +47,7 @@ class _PatientsViewState extends State<PatientsView> {
   String _searchQuery = '';
   PatientModel? _selectedPatient;
   bool _isFilterVisible = false;
+  final TextEditingController _searchCtrl = TextEditingController();
 
   // Filter values
   String _selectedAgeRange = 'All Ages';
@@ -56,6 +60,50 @@ class _PatientsViewState extends State<PatientsView> {
   @override
   void initState() {
     super.initState();
+    _selectedPatient = widget.initialSelectedPatient;
+    _searchCtrl.addListener(() => setState(() {}));
+  }
+
+  @override
+  void didUpdateWidget(covariant PatientsView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.initialSelectedPatient != oldWidget.initialSelectedPatient) {
+      setState(() {
+        _selectedPatient = widget.initialSelectedPatient;
+      });
+    }
+  }
+
+  void _viewPatient(PatientModel patient) {
+    final path = GoRouterState.of(context).matchedLocation;
+    if (path.startsWith('/nurse')) {
+      context.go('/nurse/patients/view', extra: patient);
+    } else if (path.startsWith('/reception')) {
+      context.go('/reception/patients/view', extra: patient);
+    } else if (path.startsWith('/admin')) {
+      context.go('/admin/patients/view', extra: patient);
+    } else {
+      setState(() => _selectedPatient = patient);
+    }
+  }
+
+  void _goBack() {
+    final path = GoRouterState.of(context).matchedLocation;
+    if (path == '/nurse/patients/view') {
+      context.go('/nurse/patients');
+    } else if (path == '/reception/patients/view') {
+      context.go('/reception/patients');
+    } else if (path == '/admin/patients/view') {
+      context.go('/admin/patients');
+    } else {
+      setState(() => _selectedPatient = null);
+    }
+  }
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
   }
 
   List<PatientModel> get _filteredPatients {
@@ -108,7 +156,7 @@ class _PatientsViewState extends State<PatientsView> {
     if (_selectedPatient != null) {
       return PatientDetailView(
         patient: _selectedPatient!,
-        onBack: () => setState(() => _selectedPatient = null),
+        onBack: _goBack,
         onCompleteProfile: widget.onCompleteProfile,
         onBookAppointment: widget.onBookAppointment,
       );
@@ -330,6 +378,7 @@ class _PatientsViewState extends State<PatientsView> {
                 const SizedBox(width: 12),
                 Expanded(
                   child: TextField(
+                    controller: _searchCtrl,
                     onChanged: (val) => setState(() {
                       _searchQuery = val;
                       _currentPage = 0;
@@ -352,6 +401,24 @@ class _PatientsViewState extends State<PatientsView> {
                     ),
                   ),
                 ),
+                if (_searchCtrl.text.isNotEmpty)
+                  MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: GestureDetector(
+                      onTap: () {
+                        _searchCtrl.clear();
+                        setState(() {
+                          _searchQuery = '';
+                          _currentPage = 0;
+                        });
+                      },
+                      child: const Icon(
+                        Icons.close,
+                        size: 18,
+                        color: AppTheme.textSecondaryColor,
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -446,6 +513,7 @@ class _PatientsViewState extends State<PatientsView> {
                       const SizedBox(width: 10),
                       Expanded(
                         child: TextField(
+                          controller: _searchCtrl,
                           onChanged: (val) =>
                               setState(() {
                                 _searchQuery = val;
@@ -466,6 +534,27 @@ class _PatientsViewState extends State<PatientsView> {
                           ),
                         ),
                       ),
+                      if (_searchCtrl.text.isNotEmpty)
+                        MouseRegion(
+                          cursor: SystemMouseCursors.click,
+                          child: GestureDetector(
+                            onTap: () {
+                              _searchCtrl.clear();
+                              setState(() {
+                                _searchQuery = '';
+                                _currentPage = 0;
+                              });
+                            },
+                            child: const Padding(
+                              padding: EdgeInsets.only(left: 6),
+                              child: Icon(
+                                Icons.close,
+                                size: 16,
+                                color: AppTheme.textSecondaryColor,
+                              ),
+                            ),
+                          ),
+                        ),
                     ],
                   ),
                 ),
@@ -540,6 +629,7 @@ class _PatientsViewState extends State<PatientsView> {
                 const SizedBox(width: 12),
                 Expanded(
                   child: TextField(
+                    controller: _searchCtrl,
                     onChanged: (val) => setState(() {
                       _searchQuery = val;
                       _currentPage = 0;
@@ -558,6 +648,27 @@ class _PatientsViewState extends State<PatientsView> {
                     ),
                   ),
                 ),
+                if (_searchCtrl.text.isNotEmpty)
+                  MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: GestureDetector(
+                      onTap: () {
+                        _searchCtrl.clear();
+                        setState(() {
+                          _searchQuery = '';
+                          _currentPage = 0;
+                        });
+                      },
+                      child: const Padding(
+                        padding: EdgeInsets.only(left: 8),
+                        child: Icon(
+                          Icons.close,
+                          size: 18,
+                          color: AppTheme.textSecondaryColor,
+                        ),
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -656,7 +767,7 @@ class _PatientsViewState extends State<PatientsView> {
                   info: '${age}y • $gender',
                   initials: initials,
                   tags: patient.isQuickRegister ? ['Quick'] : [],
-                  onView: () => setState(() => _selectedPatient = patient),
+                  onView: () => _viewPatient(patient),
                   onBook: () => widget.onBookAppointment(patient),
                 ),
               )
@@ -668,7 +779,7 @@ class _PatientsViewState extends State<PatientsView> {
                   info: '${age}y • $gender',
                   initials: initials,
                   tags: patient.isQuickRegister ? ['Quick'] : [],
-                  onView: () => setState(() => _selectedPatient = patient),
+                  onView: () => _viewPatient(patient),
                   onBook: () => widget.onBookAppointment(patient),
                 ),
               )
@@ -677,7 +788,7 @@ class _PatientsViewState extends State<PatientsView> {
                 info: '${age}y • $gender',
                 initials: initials,
                 tags: patient.isQuickRegister ? ['Quick'] : [],
-                onView: () => setState(() => _selectedPatient = patient),
+                onView: () => _viewPatient(patient),
                 onBook: () => widget.onBookAppointment(patient),
               ),
       );
@@ -776,8 +887,8 @@ class _PatientsViewState extends State<PatientsView> {
               ),
               child: Row(
                 children: [
-                  Expanded(flex: 2, child: _buildTableHeaderText('Patient ID')),
-                  Expanded(flex: 3, child: _buildTableHeaderText('Name')),
+                  Expanded(child: _buildTableHeaderText('S.No')),
+                  Expanded(flex: 3, child: _buildTableHeaderText('Patient')),
                   Expanded(child: _buildTableHeaderText('Age')),
                   if (!isMobile) Expanded(child: _buildTableHeaderText('Gender')),
                   if (!isMobile)
@@ -801,7 +912,9 @@ class _PatientsViewState extends State<PatientsView> {
                 child: Center(child: Text('No patients found')),
               )
             else
-              ...patients.map((patient) {
+              ...patients.asMap().entries.map((entry) {
+                final index = entry.key;
+                final patient = entry.value;
                 final String name = patient.name;
                 final parts = name
                     .trim()
@@ -826,6 +939,7 @@ class _PatientsViewState extends State<PatientsView> {
                       initials,
                       patient.isQuickRegister ? ['Quick'] : [],
                       isMobile,
+                      '${(index + 1) + (_currentPage * _itemsPerPage)}',
                     ),
                     const Divider(height: 1),
                   ],
@@ -874,7 +988,7 @@ class _PatientsViewState extends State<PatientsView> {
         ],
       ),
       child: InkWell(
-        onTap: () => setState(() => _selectedPatient = patient),
+        onTap: () => _viewPatient(patient),
         borderRadius: BorderRadius.circular(16),
         child: Padding(
           padding: const EdgeInsets.all(16),
@@ -964,7 +1078,7 @@ class _PatientsViewState extends State<PatientsView> {
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          '$ageStr • ID: ${patient.id ?? "---"}',
+                          '$ageStr • ID: ${patient.patientId ?? "---"}',
                           style: const TextStyle(
                             fontSize: 13,
                             color: Color(0xFF64748B),
@@ -1023,8 +1137,7 @@ class _PatientsViewState extends State<PatientsView> {
                 children: [
                   Expanded(
                     child: OutlinedButton(
-                      onPressed: () =>
-                          setState(() => _selectedPatient = patient),
+                      onPressed: () => _viewPatient(patient),
                       style: OutlinedButton.styleFrom(
                         padding: const EdgeInsets.symmetric(vertical: 12),
                         shape: RoundedRectangleBorder(
@@ -1115,6 +1228,7 @@ class _PatientsViewState extends State<PatientsView> {
     String initials,
     List<String> tags,
     bool isMobile,
+    String serialNumber,
   ) {
     bool isQuick = patient.isQuickRegister;
     return Container(
@@ -1125,13 +1239,12 @@ class _PatientsViewState extends State<PatientsView> {
       child: Row(
         children: [
           Expanded(
-            flex: 2,
             child: Text(
-              patient.patientId ?? 'N/A',
-              style: const TextStyle(
-                fontWeight: FontWeight.bold,
-                fontSize: 12,
-                color: AppTheme.primaryColor,
+              serialNumber,
+              style: TextStyle(
+                fontSize: 13,
+                color: isQuick ? const Color(0xFF553C9A) : const Color(0xFF4A5568),
+                fontWeight: isQuick ? FontWeight.w500 : FontWeight.normal,
               ),
             ),
           ),
@@ -1178,6 +1291,15 @@ class _PatientsViewState extends State<PatientsView> {
                             ),
                           ),
                         ],
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        patient.patientId ?? 'N/A',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: AppTheme.primaryColor,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
                       if (tags.isNotEmpty)
                         Padding(
@@ -1301,7 +1423,7 @@ class _PatientsViewState extends State<PatientsView> {
                   Icons.visibility_outlined,
                   'View',
                   isQuick ? const Color(0xFF805AD5) : const Color(0xFF3182CE),
-                  onTap: () => setState(() => _selectedPatient = patient),
+                  onTap: () => _viewPatient(patient),
                 ),
                 if (!['Admin', 'Super Admin'].contains(
                   Provider.of<AuthProvider>(context, listen: false).user?.role,
@@ -1640,28 +1762,12 @@ class _PatientsViewState extends State<PatientsView> {
           ),
         ),
         const SizedBox(height: 8),
-        Container(
+        CustomDropdownSearch(
+          label: '',
+          value: value,
+          dropdownItems: items,
           height: 48,
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          decoration: BoxDecoration(
-            border: Border.all(color: AppTheme.borderColor),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: DropdownButtonHideUnderline(
-            child: DropdownButton<String>(
-              isExpanded: true,
-              value: value,
-              icon: const Icon(Icons.keyboard_arrow_down, size: 20),
-              style: const TextStyle(
-                color: AppTheme.textPrimaryColor,
-                fontSize: 14,
-              ),
-              items: items.map((item) {
-                return DropdownMenuItem(value: item, child: Text(item));
-              }).toList(),
-              onChanged: onChanged,
-            ),
-          ),
+          onChanged: onChanged,
         ),
       ],
     );
@@ -2513,7 +2619,7 @@ class _PatientDetailViewState extends State<PatientDetailView>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this, initialIndex: 1);
+    _tabController = TabController(length: 4, vsync: this, initialIndex: 1);
     _fetchData();
   }
 
@@ -2857,7 +2963,7 @@ class _PatientDetailViewState extends State<PatientDetailView>
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    '${p.age} years • ${p.gender} • Blood Group: ${p.bloodGroup.isNotEmpty ? p.bloodGroup : "N/A"}',
+                    'Patient ID: ${p.patientId ?? "N/A"}  •  ${p.age} years  •  ${p.gender}  •  Blood Group: ${p.bloodGroup.isNotEmpty ? p.bloodGroup : "N/A"}',
                     style: TextStyle(
                       color: Colors.white.withOpacity(0.9),
                       fontSize: isTablet ? 14 : 15,
@@ -2895,12 +3001,6 @@ class _PatientDetailViewState extends State<PatientDetailView>
                   Icons.lightbulb_outline,
                   'Patient Insights',
                   onTap: () => setState(() => _isShowingInsights = true),
-                  isPrimary: false,
-                ),
-                const SizedBox(width: 12),
-                _buildHeaderButton(
-                  Icons.description_outlined,
-                  'Add Notes',
                   isPrimary: false,
                 ),
               ],
@@ -2992,7 +3092,7 @@ class _PatientDetailViewState extends State<PatientDetailView>
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    '${p.age} years • ${p.gender}',
+                    'Patient ID: ${p.patientId ?? "N/A"}  •  ${p.age} years  •  ${p.gender}',
                     style: TextStyle(
                       color: Colors.white.withOpacity(0.85),
                       fontSize: 13,
@@ -3035,10 +3135,6 @@ class _PatientDetailViewState extends State<PatientDetailView>
                 'Insights',
                 onTap: () => setState(() => _isShowingInsights = true),
               ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: _buildHeaderButton(Icons.note_add_outlined, 'Notes'),
             ),
           ],
         ),
@@ -3111,7 +3207,7 @@ class _PatientDetailViewState extends State<PatientDetailView>
           borderRadius: BorderRadius.circular(10),
         ),
         child: Row(
-          mainAxisSize: MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Icon(
               icon,
@@ -3126,6 +3222,8 @@ class _PatientDetailViewState extends State<PatientDetailView>
                 fontWeight: FontWeight.bold,
                 fontSize: 14,
               ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
           ],
         ),
@@ -3352,6 +3450,16 @@ class _PatientDetailViewState extends State<PatientDetailView>
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
+                      Icon(Icons.medical_services_outlined, size: 16),
+                      SizedBox(width: 8),
+                      Text('Consultations'),
+                    ],
+                  ),
+                ),
+                Tab(
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
                       Icon(Icons.self_improvement_outlined, size: 16),
                       SizedBox(width: 8),
                       Text('Lifestyle Data'),
@@ -3369,6 +3477,7 @@ class _PatientDetailViewState extends State<PatientDetailView>
               children: [
                 _buildMedicalHistoryTab(p),
                 _buildVisitsTimelineTab(p),
+                _buildConsultationsTab(p),
                 _buildLifestyleTab(p),
               ],
             ),
@@ -3379,10 +3488,132 @@ class _PatientDetailViewState extends State<PatientDetailView>
   }
 
   Widget _buildMedicalHistoryTab(PatientModel p) {
-    final hasHistory = p.history.isNotEmpty;
-    final hasComplaints = p.complaints.isNotEmpty;
+    if (_isLoadingConsultations) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(40),
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
 
-    if (!hasHistory && !hasComplaints) {
+    // 1. Gather Chief Complaints
+    final List<Widget> complaintItems = [];
+
+    // Initial complaint from registration
+    if (p.complaints.isNotEmpty) {
+      complaintItems.add(
+        Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: _buildHistoryItem(
+            icon: Icons.error_outline,
+            iconColor: AppTheme.primaryColor,
+            title: p.complaints,
+            subtitle: 'Initial Registration',
+            status: 'Active',
+            statusColor: AppTheme.primaryColor,
+            statusBg: AppTheme.primaryLight,
+          ),
+        ),
+      );
+    }
+
+    // Complaints from consultations
+    for (final c in _consultations) {
+      final symptoms = c['symptoms']?.toString().trim();
+      if (symptoms != null && symptoms.isNotEmpty) {
+        final date = _formatConsultationDateText(c);
+        final rawDoc = c['doctor_name'] ?? 'Doctor';
+        final doctor = rawDoc.toString().toLowerCase().startsWith('dr') ? rawDoc : 'Dr. $rawDoc';
+        complaintItems.add(
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: _buildHistoryItem(
+              icon: Icons.error_outline,
+              iconColor: AppTheme.primaryColor,
+              title: symptoms,
+              subtitle: 'Consultation on $date by $doctor',
+              status: 'Active',
+              statusColor: AppTheme.primaryColor,
+              statusBg: AppTheme.primaryLight,
+            ),
+          ),
+        );
+      }
+    }
+
+    // 2. Gather Past Medical History
+    final List<Widget> historyItems = [];
+
+    // Initial history from registration
+    if (p.history.isNotEmpty) {
+      final lines = p.history
+          .split('\n')
+          .map((l) => l.trim())
+          .where((l) => l.isNotEmpty)
+          .toList();
+      for (final line in lines) {
+        historyItems.add(
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: _buildHistoryItem(
+              icon: Icons.info_outline,
+              iconColor: AppTheme.primaryColor,
+              title: line,
+              subtitle: 'Initial Registration',
+              status: 'Managed',
+              statusColor: const Color(0xFF38A169),
+              statusBg: const Color(0xFFF0FFF4),
+            ),
+          ),
+        );
+      }
+    }
+
+    // Diagnosis & History from consultations
+    for (final c in _consultations) {
+      final date = _formatConsultationDateText(c);
+      final rawDoc = c['doctor_name'] ?? 'Doctor';
+      final doctor = rawDoc.toString().toLowerCase().startsWith('dr') ? rawDoc : 'Dr. $rawDoc';
+
+      final diagnosis = c['diagnosis']?.toString().trim();
+      if (diagnosis != null && diagnosis.isNotEmpty) {
+        historyItems.add(
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: _buildHistoryItem(
+              icon: Icons.info_outline,
+              iconColor: AppTheme.primaryColor,
+              title: diagnosis,
+              subtitle: 'Diagnosis on $date by $doctor',
+              status: 'Managed',
+              statusColor: const Color(0xFF38A169),
+              statusBg: const Color(0xFFF0FFF4),
+            ),
+          ),
+        );
+      }
+
+      final history = c['history']?.toString().trim();
+      if (history != null && history.isNotEmpty) {
+        historyItems.add(
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: _buildHistoryItem(
+              icon: Icons.info_outline,
+              iconColor: AppTheme.primaryColor,
+              title: history,
+              subtitle: 'History on $date by $doctor',
+              status: 'Managed',
+              statusColor: const Color(0xFF38A169),
+              statusBg: const Color(0xFFF0FFF4),
+            ),
+          ),
+        );
+      }
+    }
+
+    if (complaintItems.isEmpty && historyItems.isEmpty) {
       return const Center(
         child: Text(
           'No medical history recorded.',
@@ -3396,7 +3627,7 @@ class _PatientDetailViewState extends State<PatientDetailView>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (hasComplaints) ...[
+          if (complaintItems.isNotEmpty) ...[
             const Text(
               'Chief Complaints',
               style: TextStyle(
@@ -3406,18 +3637,10 @@ class _PatientDetailViewState extends State<PatientDetailView>
               ),
             ),
             const SizedBox(height: 12),
-            _buildHistoryItem(
-              icon: Icons.error_outline,
-              iconColor: AppTheme.primaryColor,
-              title: p.complaints,
-              subtitle: 'Current',
-              status: 'Active',
-              statusColor: AppTheme.primaryColor,
-              statusBg: AppTheme.primaryLight,
-            ),
-            const SizedBox(height: 20),
+            ...complaintItems,
+            const SizedBox(height: 24),
           ],
-          if (hasHistory) ...[
+          if (historyItems.isNotEmpty) ...[
             const Text(
               'Past Medical History',
               style: TextStyle(
@@ -3427,24 +3650,7 @@ class _PatientDetailViewState extends State<PatientDetailView>
               ),
             ),
             const SizedBox(height: 12),
-            ...p.history
-                .split('\n')
-                .where((l) => l.trim().isNotEmpty)
-                .map(
-                  (line) => Padding(
-                    padding: const EdgeInsets.only(bottom: 12),
-                    child: _buildHistoryItem(
-                      icon: Icons.info_outline,
-                      iconColor: AppTheme.primaryColor,
-                      title: line.trim(),
-                      subtitle: 'Past record',
-                      status: 'Managed',
-                      statusColor: const Color(0xFF38A169),
-                      statusBg: const Color(0xFFF0FFF4),
-                    ),
-                  ),
-                )
-                .toList(),
+            ...historyItems,
           ],
         ],
       ),
@@ -3577,7 +3783,12 @@ class _PatientDetailViewState extends State<PatientDetailView>
 
                   final meds = medsList.isNotEmpty
                       ? medsList
-                            .map((m) => '${m['name']} (${m['dosage']})')
+                            .map((m) {
+                              if (m is Map) {
+                                return '${m['name']} (${m['dosage']})';
+                              }
+                              return m.toString();
+                            })
                             .join(', ')
                       : 'No medications';
 
@@ -3586,8 +3797,8 @@ class _PatientDetailViewState extends State<PatientDetailView>
                   final diagnosis = c['diagnosis'] ?? 'None';
 
                   return _buildTimelineItem(
-                    date: c['appointment_date'] ?? 'Consultation',
-                    time: c['appointment_time'] ?? '—',
+                    date: _formatConsultationDateText(c),
+                    time: _formatConsultationTimeText(c),
                     dept: c['department'] ?? 'General',
                     doctor: doctor,
                     complaint: symptoms,
@@ -3766,6 +3977,365 @@ class _PatientDetailViewState extends State<PatientDetailView>
         ),
       ],
     );
+  }
+
+  Widget _buildConsultationsTab(PatientModel p) {
+    if (_isLoadingConsultations) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(40),
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
+
+    if (_consultations.isEmpty) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(40.0),
+          child: Text(
+            'No consultations recorded',
+            style: TextStyle(color: AppTheme.textSecondaryColor, fontSize: 14),
+          ),
+        ),
+      );
+    }
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const SizedBox(width: 16),
+              const Text(
+                'Date',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: AppTheme.primaryColor,
+                  fontSize: 13,
+                ),
+              ),
+              const SizedBox(width: 200),
+              const Text(
+                'Consultation Details',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: AppTheme.primaryColor,
+                  fontSize: 13,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          ListView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: _consultations.length,
+            itemBuilder: (context, index) {
+              final c = _consultations[index];
+              return Card(
+                elevation: 0,
+                margin: const EdgeInsets.only(bottom: 12),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(6),
+                  side: BorderSide(color: Colors.grey.shade200),
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: Theme(
+                  data: Theme.of(context).copyWith(
+                    dividerColor: Colors.transparent,
+                  ),
+                  child: ExpansionTile(
+                    backgroundColor: const Color(0xFFF7FAFC),
+                    collapsedBackgroundColor: const Color(0xFFF7FAFC),
+                    iconColor: AppTheme.primaryColor,
+                    collapsedIconColor: AppTheme.primaryColor,
+                    title: Builder(
+                      builder: (context) {
+                        final docName = c['doctor_name'] ?? 'General Practitioner';
+                        final displayDoc = docName.toString().toLowerCase().startsWith('dr') ? docName : 'Dr. $docName';
+                        final dept = c['department'] ?? 'General Medicine';
+                        return Text(
+                          '${_formatConsultationDateText(c)} / ${_formatConsultationTimeText(c)} - $displayDoc ($dept)',
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF2D3748),
+                            fontSize: 13,
+                          ),
+                        );
+                      }
+                    ),
+                    childrenPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                    expandedCrossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _buildConsultationGrid(c),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _formatTimelineDate(String? dateStr) {
+    if (dateStr == null) return '—';
+    final dt = DateFormatter.toDateTime(dateStr);
+    if (dt != null) {
+      return DateFormat('dd-MMM-yyyy').format(dt);
+    }
+    return dateStr;
+  }
+
+  String _formatConsultationDateText(Map<String, dynamic> c) {
+    if (c['created_at'] != null && c['created_at'].toString().isNotEmpty) {
+      try {
+        final dt = DateTime.parse(c['created_at'].toString()).toLocal();
+        return DateFormat('dd-MMM-yyyy').format(dt);
+      } catch (_) {}
+    }
+    return _formatTimelineDate(c['appointment_date']);
+  }
+
+  String _formatConsultationTimeText(Map<String, dynamic> c) {
+    if (c['created_at'] != null && c['created_at'].toString().isNotEmpty) {
+      try {
+        final dt = DateTime.parse(c['created_at'].toString()).toLocal();
+        return DateFormat('hh:mm a').format(dt);
+      } catch (_) {}
+    }
+    return c['appointment_time'] ?? '—';
+  }
+
+  Widget _buildGridRow(
+    String label,
+    String? value, {
+    Widget? customValueWidget,
+    bool isHeader = false,
+  }) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 150,
+          child: Text(
+            label,
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              color: isHeader ? const Color(0xFF2D3748) : AppTheme.primaryColor,
+              fontSize: 13,
+            ),
+          ),
+        ),
+        const SizedBox(width: 16),
+        Expanded(
+          child: customValueWidget ??
+              Text(
+                value ?? '',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: isHeader ? FontWeight.w600 : FontWeight.normal,
+                  color: const Color(0xFF2D3748),
+                ),
+              ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildConsultationGrid(Map<String, dynamic> c) {
+    try {
+      final doctor = c['doctor_name'] ?? 'General Practitioner';
+      final dept = c['department'] ?? 'General Medicine';
+
+      List medsList = [];
+      if (c['medications'] != null) {
+        if (c['medications'] is String) {
+          try {
+            medsList = jsonDecode(c['medications']);
+          } catch (_) {}
+        } else if (c['medications'] is List) {
+          medsList = c['medications'];
+        }
+      }
+
+      List labsList = [];
+      if (c['lab_tests'] != null) {
+        if (c['lab_tests'] is String) {
+          try {
+            labsList = jsonDecode(c['lab_tests']);
+          } catch (_) {}
+        } else if (c['lab_tests'] is List) {
+          labsList = c['lab_tests'];
+        }
+      }
+
+      final ref = c['referral'];
+      Map? refMap;
+      if (ref is Map) {
+        refMap = ref;
+      } else if (ref is String && ref.isNotEmpty) {
+        try {
+          final decoded = jsonDecode(ref);
+          if (decoded is Map) refMap = decoded;
+        } catch (_) {}
+      }
+
+      List? docsList;
+      final docs = c['documents'];
+      if (docs is List) {
+        docsList = docs;
+      } else if (docs is String && docs.isNotEmpty) {
+        try {
+          final decoded = jsonDecode(docs);
+          if (decoded is List) docsList = decoded;
+        } catch (_) {}
+      }
+
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (c['symptoms'] != null && c['symptoms'].toString().isNotEmpty) ...[
+            _buildGridRow(
+              'Problem',
+              c['symptoms'].toString(),
+            ),
+            const SizedBox(height: 12),
+          ],
+          if (c['leading_questions'] != null && c['leading_questions'].toString().isNotEmpty) ...[
+            _buildGridRow(
+              'Leading Questions',
+              c['leading_questions'].toString(),
+            ),
+            const SizedBox(height: 12),
+          ],
+          if (c['history'] != null && c['history'].toString().isNotEmpty) ...[
+            _buildGridRow(
+              'History',
+              c['history'].toString(),
+            ),
+            const SizedBox(height: 12),
+          ],
+          if (c['examination'] != null && c['examination'].toString().isNotEmpty) ...[
+            _buildGridRow(
+              'Examination',
+              c['examination'].toString(),
+            ),
+            const SizedBox(height: 12),
+          ],
+          if (c['family_history'] != null && c['family_history'].toString().isNotEmpty) ...[
+            _buildGridRow(
+              'Family History',
+              c['family_history'].toString(),
+            ),
+            const SizedBox(height: 12),
+          ],
+          if (c['social'] != null && c['social'].toString().isNotEmpty) ...[
+            _buildGridRow(
+              'Social History',
+              c['social'].toString(),
+            ),
+            const SizedBox(height: 12),
+          ],
+          if (c['allergy'] != null && c['allergy'].toString().isNotEmpty) ...[
+            _buildGridRow(
+              'Allergies',
+              c['allergy'].toString(),
+            ),
+            const SizedBox(height: 12),
+          ],
+          if (c['procedure'] != null && c['procedure'].toString().isNotEmpty) ...[
+            _buildGridRow(
+              'Procedure',
+              c['procedure'].toString(),
+            ),
+            const SizedBox(height: 12),
+          ],
+          if (c['diagnosis'] != null && c['diagnosis'].toString().isNotEmpty) ...[
+            _buildGridRow(
+              'Diagnosis',
+              c['diagnosis'].toString(),
+            ),
+            const SizedBox(height: 12),
+          ],
+          if (c['plan'] != null && c['plan'].toString().isNotEmpty) ...[
+            _buildGridRow(
+              'Plan',
+              c['plan'].toString(),
+            ),
+            const SizedBox(height: 12),
+          ],
+          if (medsList.isNotEmpty) ...[
+            _buildGridRow(
+              'Medications',
+              medsList.map((m) {
+                if (m is Map) {
+                  final name = m['name'] ?? 'N/A';
+                  final dosage = m['dosage'] ?? 'N/A';
+                  final freq = m['frequency'] ?? 'N/A';
+                  return '$name - $dosage ($freq)';
+                }
+                return m.toString();
+              }).join('\n'),
+            ),
+            const SizedBox(height: 12),
+          ],
+          if (labsList.isNotEmpty) ...[
+            _buildGridRow(
+              'Lab Tests',
+              labsList.join(', '),
+            ),
+            const SizedBox(height: 12),
+          ],
+          if (refMap != null &&
+              ((refMap['referred_doctor']?.toString().isNotEmpty ?? false) ||
+               (refMap['referred_department']?.toString().isNotEmpty ?? false) ||
+               (refMap['referral_notes']?.toString().isNotEmpty ?? false))) ...[
+            _buildGridRow(
+              'Referral',
+              'To Doctor: ${refMap['referred_doctor'] ?? 'N/A'} • Dept: ${refMap['referred_department'] ?? 'N/A'}${refMap['referral_notes'] != null && refMap['referral_notes'].toString().isNotEmpty ? "\nNotes: ${refMap['referral_notes']}" : ""}',
+            ),
+            const SizedBox(height: 12),
+          ],
+          if (docsList != null && docsList.isNotEmpty) ...[
+            _buildGridRow(
+              'Documents',
+              docsList.map((d) {
+                if (d is Map) {
+                  return '${d['title']} (${d['file_name']})';
+                }
+                return '';
+              }).where((str) => str.isNotEmpty).join('\n'),
+            ),
+            const SizedBox(height: 12),
+          ],
+          if (c['comment'] != null && c['comment'].toString().isNotEmpty) ...[
+            _buildGridRow(
+              'Comments',
+              c['comment'].toString(),
+            ),
+            const SizedBox(height: 12),
+          ],
+          if (c['notes'] != null && c['notes'].toString().isNotEmpty) ...[
+            _buildGridRow(
+              'Notes',
+              c['notes'].toString(),
+            ),
+            const SizedBox(height: 12),
+          ],
+        ],
+      );
+    } catch (e, stack) {
+      debugPrint("Error rendering consultation grid: $e\n$stack");
+      return Text(
+        "Error rendering details: $e",
+        style: const TextStyle(color: Colors.red, fontSize: 12),
+      );
+    }
   }
 
   Widget _buildLifestyleTab(PatientModel p) {
@@ -4064,14 +4634,27 @@ class PatientInsightsFormState extends State<PatientInsightsForm> {
   Future<bool> saveInsights() async {
     if (widget.patient.id == null) return false;
     
-    try {
-      final Map<String, String> data = {};
-      _controllers.forEach((key, controller) {
-        if (controller.text.trim().isNotEmpty) {
-          data[key] = controller.text.trim();
-        }
-      });
+    final Map<String, String> data = {};
+    _controllers.forEach((key, controller) {
+      if (controller.text.trim().isNotEmpty) {
+        data[key] = controller.text.trim();
+      }
+    });
 
+    if (data.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Please answer at least one question before saving.'),
+            backgroundColor: Colors.orange,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return false;
+    }
+    
+    try {
       await _apiController.savePatientInsights(widget.patient.id!, data);
       
       if (mounted) {
