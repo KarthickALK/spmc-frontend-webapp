@@ -24,6 +24,7 @@ class CustomDropdownSearch extends StatefulWidget {
   final Color? fillColor;
   final Color? popupBgColor;
   final double? hintFontSize;
+  final bool allowFreeText;
 
   const CustomDropdownSearch({
     super.key,
@@ -45,6 +46,7 @@ class CustomDropdownSearch extends StatefulWidget {
     this.fillColor,
     this.popupBgColor,
     this.hintFontSize,
+    this.allowFreeText = false,
   });
 
   static bool get isOpen =>
@@ -233,6 +235,9 @@ class _CustomDropdownSearchState extends State<CustomDropdownSearch>
           if (displayValue != _textEditingController.text) {
             _textEditingController.text = displayValue;
           }
+          if (widget.value == null || widget.value!.isEmpty) {
+            _filteredItems = _allEntries.entries.toList();
+          }
         }
       });
     }
@@ -284,6 +289,12 @@ class _CustomDropdownSearchState extends State<CustomDropdownSearch>
       _closeActiveDropdown!();
     }
     _closeActiveDropdown = _hideDropdown;
+
+    final currentText = _textEditingController.text.trim();
+    final selectedDisplay = _allEntries[widget.value] ?? widget.value ?? '';
+    if (currentText.isEmpty || currentText == selectedDisplay) {
+      _filteredItems = _allEntries.entries.toList();
+    }
 
     final RenderBox renderBox = context.findRenderObject() as RenderBox;
     final size = renderBox.size;
@@ -366,18 +377,53 @@ class _CustomDropdownSearchState extends State<CustomDropdownSearch>
                       children: [
                         Flexible(
                           child: _filteredItems.isEmpty
-                              ? Padding(
-                                  padding: const EdgeInsets.all(20.0),
-                                  child: Text(
-                                    'No results found',
-                                    style: TextStyle(
-                                      fontFamily: 'Inter',
-                                      color: Colors.grey.shade500,
-                                      fontSize: 14,
-                                    ),
-                                    textAlign: TextAlign.center,
-                                  ),
-                                )
+                              ? (widget.allowFreeText && _textEditingController.text.trim().isNotEmpty
+                                  ? Material(
+                                      color: Colors.transparent,
+                                      child: InkWell(
+                                        onTap: () {
+                                          final customVal = _textEditingController.text.trim();
+                                          if (_fieldKey.currentState != null) {
+                                            _selectItem(
+                                              _fieldKey.currentState!,
+                                              MapEntry(customVal, customVal),
+                                            );
+                                          }
+                                        },
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(16.0),
+                                          child: Row(
+                                            children: [
+                                              const Icon(Icons.add_circle_outline, size: 18, color: AppTheme.primaryColor),
+                                              const SizedBox(width: 8),
+                                              Expanded(
+                                                child: Text(
+                                                  'Use "${_textEditingController.text.trim()}"',
+                                                  style: const TextStyle(
+                                                    fontFamily: 'Inter',
+                                                    color: AppTheme.primaryColor,
+                                                    fontWeight: FontWeight.bold,
+                                                    fontSize: 14,
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    )
+                                  : Padding(
+                                      padding: const EdgeInsets.all(20.0),
+                                      child: Text(
+                                        'No results found',
+                                        style: TextStyle(
+                                          fontFamily: 'Inter',
+                                          color: Colors.grey.shade500,
+                                          fontSize: 14,
+                                        ),
+                                        textAlign: TextAlign.center,
+                                      ),
+                                    ))
                               : NotificationListener<ScrollNotification>(
                                   onNotification: (notification) {
                                     if (notification
@@ -648,13 +694,16 @@ class _CustomDropdownSearchState extends State<CustomDropdownSearch>
                                   fontSize: 14,
                                   fontWeight: FontWeight.w400,
                                 ),
-                                onChanged: (val) {
-                                  field.didChange(val);
-                                  _filterItems(val);
-                                  if (_overlayEntry == null) {
-                                    _showDropdown(field);
-                                  }
-                                },
+                                 onChanged: (val) {
+                                   field.didChange(val);
+                                   if (widget.allowFreeText) {
+                                     widget.onChanged?.call(val);
+                                   }
+                                   _filterItems(val);
+                                   if (_overlayEntry == null) {
+                                     _showDropdown(field);
+                                   }
+                                 },
                                 onTap: () {
                                   _toggleDropdown(field);
                                 },
