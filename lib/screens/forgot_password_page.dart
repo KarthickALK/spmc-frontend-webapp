@@ -73,7 +73,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
   void _startResendTimer() {
     _resendTimer?.cancel();
     setState(() {
-      _secondsRemaining = 120;
+      _secondsRemaining = 60;
     });
     _resendTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (!mounted) {
@@ -507,6 +507,9 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
             validator: (value) {
               if (value == null || value.trim().isEmpty) {
                 return 'Please enter Email Address';
+              }
+              if (value.trim().contains(RegExp(r'[A-Z]'))) {
+                return 'Please enter a valid email address';
               }
               if (!RegExp(
                 r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$',
