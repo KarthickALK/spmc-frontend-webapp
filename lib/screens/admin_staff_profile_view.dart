@@ -9,7 +9,7 @@ class AdminStaffProfileView extends StatelessWidget {
 
   const AdminStaffProfileView({Key? key, required this.user, required this.onBack}) : super(key: key);
 
-  Widget _buildDocumentRow(String label, String? docUrl) {
+  Widget _buildDocumentRow(BuildContext context, String label, String? docUrl) {
     final hasDoc = docUrl != null && docUrl.trim().isNotEmpty;
     final isUrl = hasDoc &&
         (docUrl.startsWith('http://') ||
@@ -51,7 +51,7 @@ class AdminStaffProfileView extends StatelessWidget {
                 if (hasDoc && isUrl)
                   OutlinedButton.icon(
                     onPressed: () {
-                      openDocumentInNewTab(docUrl, label);
+                      showDocumentViewer(context, docUrl, label);
                     },
                     icon: const Icon(
                       Icons.open_in_new,
@@ -295,6 +295,14 @@ class AdminStaffProfileView extends StatelessWidget {
                 _buildDetailRow('Full Name', user.rawFullname ?? '-', Icons.person_outline),
                 _buildDetailRow('Email Address', user.email, Icons.mail_outline),
                 _buildDetailRow('Mobile Number', user.mobile ?? '-', Icons.phone_android_outlined),
+                if (!isMobile)
+                  _buildDetailRow(
+                    'Onboarded Date',
+                    user.createdAt != null && user.createdAt!.isNotEmpty
+                        ? user.createdAt!
+                        : '-',
+                    Icons.calendar_today_outlined,
+                  ),
                 if (user.bio != null && user.bio!.isNotEmpty)
                   _buildDetailRow('Bio Summary', user.bio!, Icons.description_outlined),
               ],
@@ -438,7 +446,7 @@ class AdminStaffProfileView extends StatelessWidget {
               ]),
               sectionSpacing,
               _buildInfoCard('Uploaded Documents', [
-                _buildDocumentRow('Registration Certificate', user.registrationCertificate),
+                _buildDocumentRow(context, 'Registration Certificate', user.registrationCertificate),
               ]),
             ] else ...[
               Row(
@@ -460,7 +468,7 @@ class AdminStaffProfileView extends StatelessWidget {
                         ]),
                         sectionSpacing,
                         _buildInfoCard('Uploaded Documents', [
-                          _buildDocumentRow('Registration Certificate', user.registrationCertificate),
+                          _buildDocumentRow(context, 'Registration Certificate', user.registrationCertificate),
                         ]),
                       ],
                     ),

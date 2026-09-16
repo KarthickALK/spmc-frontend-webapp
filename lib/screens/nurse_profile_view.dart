@@ -11,6 +11,7 @@ import '../services/media_service.dart';
 import '../widgets/document_view_dialog.dart';
 import 'package:go_router/go_router.dart';
 import '../core/routes/route_constants.dart';
+import '../utils/capitalize_formatter.dart';
 
 class NurseProfileView extends StatefulWidget {
   final bool isEditing;
@@ -99,14 +100,16 @@ class _NurseProfileViewState extends State<NurseProfileView> {
     final isLocal = _certFileBytes != null;
 
     if (isLocal && _certFileBytes != null) {
-      openDocumentInNewTab(
+      showDocumentViewer(
+        context,
         '',
         _certFileName ?? 'Registration Certificate',
         bytes: _certFileBytes,
         fileName: _certFileName,
       );
     } else if (certUrl.isNotEmpty) {
-      openDocumentInNewTab(
+      showDocumentViewer(
+        context,
         certUrl,
         'Registration Certificate',
       );
@@ -408,7 +411,7 @@ class _NurseProfileViewState extends State<NurseProfileView> {
                 if (isUrl)
                   OutlinedButton.icon(
                     onPressed: () {
-                      openDocumentInNewTab(certUrl, 'Registration Certificate');
+                      showDocumentViewer(context, certUrl, 'Registration Certificate');
                     },
                     icon: const Icon(Icons.open_in_new, size: 14, color: Color(0xFF0F5A8E)),
                     label: const Text(
@@ -579,6 +582,7 @@ class _NurseProfileViewState extends State<NurseProfileView> {
           autovalidateMode: AutovalidateMode.onUserInteraction,
           validator: validator,
           keyboardType: isNumeric ? TextInputType.number : TextInputType.text,
+          textCapitalization: (!isNumeric && !isReadOnly) ? TextCapitalization.words : TextCapitalization.none,
           maxLength: maxLength,
           inputFormatters: isNumeric
               ? [FilteringTextInputFormatter.digitsOnly]
@@ -588,6 +592,7 @@ class _NurseProfileViewState extends State<NurseProfileView> {
                         ? RegExp(r'[a-zA-Z0-9\s./,()\-]') 
                         : RegExp(r'[a-zA-Z\s./,()\-]'),
                   ),
+                  const CapitalizeWordsInputFormatter(),
                 ]),
           mouseCursor: onTap != null 
               ? SystemMouseCursors.click 
