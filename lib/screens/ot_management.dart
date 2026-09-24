@@ -19,6 +19,7 @@ import 'package:speech_to_text/speech_to_text.dart' as stt;
 import '../utils/web_audio_recorder.dart';
 import '../services/live_speech_service.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
+import '../utils/app_localizations.dart';
 
 
 // --- CUSTOM INPUT FORMATTERS ---
@@ -745,6 +746,7 @@ class _OTManagementScreenState extends State<OTManagementScreen> {
         _remarksController.clear();
         _surgeonController.clear();
         _anaesthetistController.clear();
+        _activeTab = 1; // Switch to Active Pipeline view
         
         // Reload all patients/doctors/cases to capture new state
         _loadPatientsAndDoctors();
@@ -764,6 +766,27 @@ class _OTManagementScreenState extends State<OTManagementScreen> {
         ),
       );
     }
+  }
+
+  void _cancelSurgeryRequest() {
+    setState(() {
+      _selectedCase = null;
+      _selectedPatientId = null;
+      _selectedPatientDisplayId = null;
+      _selectedOtRoom = null;
+      _selectedNurseNames = [];
+      _selectedGender = 'Male';
+      _selectedBloodGroup = 'O+';
+      _selectedSurgeryType = 'General Surgery';
+      _selectedPriority = 'Elective';
+      _patientNameController.clear();
+      _ageController.clear();
+      _diagnosisController.clear();
+      _remarksController.clear();
+      _surgeonController.clear();
+      _anaesthetistController.clear();
+      _activeTab = 1; // Return to Active Pipeline tab
+    });
   }
 
   /// Helper to parse time strings like '09:00 AM' or '11:30 AM'
@@ -1482,25 +1505,31 @@ class _OTManagementScreenState extends State<OTManagementScreen> {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          _buildTabItem(0, 'Dashboard', Icons.dashboard_outlined),
+          _buildTabItem(0, context.tr('dashboard', fallback: 'Dashboard'), Icons.dashboard_outlined),
           const SizedBox(width: 4),
           _buildTabItem(
             1,
-            widget.isMobile ? 'Active' : 'Active Cases',
+            widget.isMobile
+                ? context.tr('tab_active_cases', fallback: 'Active')
+                : context.tr('tab_active_cases', fallback: 'Active Cases'),
             Icons.pending_actions_outlined,
             badgeCount: activeCasesCount,
           ),
           const SizedBox(width: 4),
           _buildTabItem(
             2,
-            widget.isMobile ? 'Completed' : 'Completed Cases',
+            widget.isMobile
+                ? context.tr('tab_completed_cases', fallback: 'Completed')
+                : context.tr('tab_completed_cases', fallback: 'Completed Cases'),
             Icons.check_circle_outline,
             badgeCount: completedCasesCount,
           ),
           const SizedBox(width: 4),
           _buildTabItem(
             3,
-            widget.isMobile ? 'Schedule' : 'Schedule Surgery',
+            widget.isMobile
+                ? context.tr('tab_schedule_surgery', fallback: 'Schedule')
+                : context.tr('tab_schedule_surgery', fallback: 'Schedule Surgery'),
             Icons.add_circle_outline,
           ),
         ],
@@ -1592,21 +1621,21 @@ class _OTManagementScreenState extends State<OTManagementScreen> {
                 ? Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Column(
+                      Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            'OT Management',
-                            style: TextStyle(
+                            context.tr('ot_management', fallback: 'OT Management'),
+                            style: const TextStyle(
                               fontSize: 18,
                               fontWeight: FontWeight.bold,
                               color: AppTheme.textPrimaryColor,
                             ),
                           ),
-                          SizedBox(height: 4),
+                          const SizedBox(height: 4),
                           Text(
-                            'Schedule and view operation cases details',
-                            style: TextStyle(
+                            context.tr('ot_subtitle', fallback: 'Schedule and view operation cases details'),
+                            style: const TextStyle(
                               fontSize: 11,
                               color: AppTheme.textSecondaryColor,
                             ),
@@ -1623,21 +1652,21 @@ class _OTManagementScreenState extends State<OTManagementScreen> {
                 : Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Column(
+                      Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            'OT Management',
-                            style: TextStyle(
+                            context.tr('ot_management', fallback: 'OT Management'),
+                            style: const TextStyle(
                               fontSize: 20,
                               fontWeight: FontWeight.bold,
                               color: AppTheme.textPrimaryColor,
                             ),
                           ),
-                          SizedBox(height: 4),
+                          const SizedBox(height: 4),
                           Text(
-                            'Schedule and view operation cases details',
-                            style: TextStyle(
+                            context.tr('ot_subtitle', fallback: 'Schedule and view operation cases details'),
+                            style: const TextStyle(
                               fontSize: 12,
                               color: AppTheme.textSecondaryColor,
                             ),
@@ -1702,24 +1731,80 @@ class _OTManagementScreenState extends State<OTManagementScreen> {
           widget.isMobile
               ? Column(
                   children: [
-                    _buildStatCard('Pending Requests', _pendingRequestsCount.toString(), 'Requires Schedule', Icons.calendar_month, Colors.orange),
+                    _buildStatCard(
+                      context.tr('pending_requests', fallback: 'Pending Requests'),
+                      _pendingRequestsCount.toString(),
+                      context.tr('requires_schedule', fallback: 'Requires Schedule'),
+                      Icons.calendar_month,
+                      Colors.orange,
+                    ),
                     const SizedBox(height: 12),
-                    _buildStatCard('Scheduled Today', _scheduledTodayCount.toString(), 'Pre-op in progress', Icons.schedule, Colors.blue),
+                    _buildStatCard(
+                      context.tr('scheduled_today', fallback: 'Scheduled Today'),
+                      _scheduledTodayCount.toString(),
+                      context.tr('pre_op_in_progress', fallback: 'Pre-op in progress'),
+                      Icons.schedule,
+                      Colors.blue,
+                    ),
                     const SizedBox(height: 12),
-                    _buildStatCard('Active In Surgery', _activeInSurgeryCount.toString(), 'Live operating room', Icons.flash_on, Colors.purple),
+                    _buildStatCard(
+                      context.tr('active_in_surgery', fallback: 'Active In Surgery'),
+                      _activeInSurgeryCount.toString(),
+                      context.tr('live_operating_room', fallback: 'Live operating room'),
+                      Icons.flash_on,
+                      Colors.purple,
+                    ),
                     const SizedBox(height: 12),
-                    _buildStatCard('Recovery & Post-Op', _recoveryPostOpCount.toString(), 'Monitoring vitals', Icons.monitor_heart, Colors.pink),
+                    _buildStatCard(
+                      context.tr('recovery_post_op', fallback: 'Recovery & Post-Op'),
+                      _recoveryPostOpCount.toString(),
+                      context.tr('monitoring_vitals', fallback: 'Monitoring vitals'),
+                      Icons.monitor_heart,
+                      Colors.pink,
+                    ),
                   ],
                 )
               : Row(
                   children: [
-                    Expanded(child: _buildStatCard('Pending Requests', _pendingRequestsCount.toString(), 'Requires Schedule', Icons.calendar_month, Colors.orange)),
+                    Expanded(
+                      child: _buildStatCard(
+                        context.tr('pending_requests', fallback: 'Pending Requests'),
+                        _pendingRequestsCount.toString(),
+                        context.tr('requires_schedule', fallback: 'Requires Schedule'),
+                        Icons.calendar_month,
+                        Colors.orange,
+                      ),
+                    ),
                     const SizedBox(width: 16),
-                    Expanded(child: _buildStatCard('Scheduled Today', _scheduledTodayCount.toString(), 'Pre-op in progress', Icons.schedule, Colors.blue)),
+                    Expanded(
+                      child: _buildStatCard(
+                        context.tr('scheduled_today', fallback: 'Scheduled Today'),
+                        _scheduledTodayCount.toString(),
+                        context.tr('pre_op_in_progress', fallback: 'Pre-op in progress'),
+                        Icons.schedule,
+                        Colors.blue,
+                      ),
+                    ),
                     const SizedBox(width: 16),
-                    Expanded(child: _buildStatCard('Active In Surgery', _activeInSurgeryCount.toString(), 'Live operating room', Icons.flash_on, Colors.purple)),
+                    Expanded(
+                      child: _buildStatCard(
+                        context.tr('active_in_surgery', fallback: 'Active In Surgery'),
+                        _activeInSurgeryCount.toString(),
+                        context.tr('live_operating_room', fallback: 'Live operating room'),
+                        Icons.flash_on,
+                        Colors.purple,
+                      ),
+                    ),
                     const SizedBox(width: 16),
-                    Expanded(child: _buildStatCard('Recovery & Post-Op', _recoveryPostOpCount.toString(), 'Monitoring vitals', Icons.monitor_heart, Colors.pink)),
+                    Expanded(
+                      child: _buildStatCard(
+                        context.tr('recovery_post_op', fallback: 'Recovery & Post-Op'),
+                        _recoveryPostOpCount.toString(),
+                        context.tr('monitoring_vitals', fallback: 'Monitoring vitals'),
+                        Icons.monitor_heart,
+                        Colors.pink,
+                      ),
+                    ),
                   ],
                 ),
           const SizedBox(height: 28),
@@ -2132,6 +2217,10 @@ class _OTManagementScreenState extends State<OTManagementScreen> {
                       _searchQuery = val;
                     });
                   },
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: AppTheme.getTextPrimaryColor(context),
+                  ),
                   decoration: InputDecoration(
                     hintText: 'Search registry...',
                     prefixIcon: const Icon(Icons.search, size: 18, color: AppTheme.textSecondaryColor),
@@ -2158,10 +2247,10 @@ class _OTManagementScreenState extends State<OTManagementScreen> {
                     isDense: true,
                     contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                     filled: true,
-                    fillColor: const Color(0xFFF8FAFC),
+                    fillColor: AppTheme.isDark(context) ? AppTheme.darkInputFillColor : const Color(0xFFF8FAFC),
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(8),
-                      borderSide: BorderSide.none,
+                      borderSide: BorderSide(color: AppTheme.getBorderColor(context)),
                     ),
                   ),
                 ),
@@ -2454,6 +2543,10 @@ class _OTManagementScreenState extends State<OTManagementScreen> {
                       _searchQuery = val;
                     });
                   },
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: AppTheme.getTextPrimaryColor(context),
+                  ),
                   decoration: InputDecoration(
                     hintText: 'Search registry...',
                     prefixIcon: const Icon(Icons.search, size: 18, color: AppTheme.textSecondaryColor),
@@ -2480,10 +2573,10 @@ class _OTManagementScreenState extends State<OTManagementScreen> {
                     isDense: true,
                     contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                     filled: true,
-                    fillColor: const Color(0xFFF8FAFC),
+                    fillColor: AppTheme.isDark(context) ? AppTheme.darkInputFillColor : const Color(0xFFF8FAFC),
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(8),
-                      borderSide: BorderSide.none,
+                      borderSide: BorderSide(color: AppTheme.getBorderColor(context)),
                     ),
                   ),
                 ),
@@ -3033,10 +3126,14 @@ class _OTManagementScreenState extends State<OTManagementScreen> {
               borderRadius: BorderRadius.circular(8),
             ),
             child: TabBar(
-              isScrollable: !widget.isMobile,
+              isScrollable: true,
+              tabAlignment: TabAlignment.start,
+              padding: EdgeInsets.zero,
+              labelPadding: const EdgeInsets.symmetric(horizontal: 12),
               tabs: [
                 const Tab(
                   child: Row(
+                    mainAxisSize: MainAxisSize.min,
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       Icon(Icons.info_outline, size: 14),
@@ -3047,6 +3144,7 @@ class _OTManagementScreenState extends State<OTManagementScreen> {
                 ),
                 const Tab(
                   child: Row(
+                    mainAxisSize: MainAxisSize.min,
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       Icon(Icons.vaccines_outlined, size: 14),
@@ -3057,6 +3155,7 @@ class _OTManagementScreenState extends State<OTManagementScreen> {
                 ),
                 const Tab(
                   child: Row(
+                    mainAxisSize: MainAxisSize.min,
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       Icon(Icons.assignment_outlined, size: 14),
@@ -3067,6 +3166,7 @@ class _OTManagementScreenState extends State<OTManagementScreen> {
                 ),
                 const Tab(
                   child: Row(
+                    mainAxisSize: MainAxisSize.min,
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       Icon(Icons.history, size: 14),
@@ -4630,6 +4730,36 @@ class _OTManagementScreenState extends State<OTManagementScreen> {
       );
     }
 
+  Widget _buildFieldLabel(String label, {bool isRequired = false}) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6.0),
+      child: RichText(
+        text: TextSpan(
+          children: [
+            TextSpan(
+              text: label,
+              style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: AppTheme.textPrimaryColor,
+                fontFamily: AppTheme.fontFamily,
+              ),
+            ),
+            if (isRequired)
+              const TextSpan(
+                text: ' *',
+                style: TextStyle(
+                  color: AppTheme.dangerColor,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13,
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
     // Step-by-Step Forms
     if (otCase.status == 'OT Requested') {
       return _buildSchedulingForm(otCase);
@@ -4673,7 +4803,9 @@ class _OTManagementScreenState extends State<OTManagementScreen> {
             const SizedBox(height: 12),
             widget.isMobile
                 ? Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      _buildFieldLabel('BP (mmHg)', isRequired: true),
                       TextFormField(
                         controller: _preOpBpController,
                         keyboardType: TextInputType.number,
@@ -4688,12 +4820,12 @@ class _OTManagementScreenState extends State<OTManagementScreen> {
                           return null;
                         },
                         decoration: AppTheme.standardInputDecoration(
-                          label: 'BP (mmHg)',
                           prefixIcon: Icons.monitor_heart_outlined,
                           hintText: '90–300',
                         ),
                       ),
                       const SizedBox(height: 12),
+                      _buildFieldLabel('Pulse (bpm)', isRequired: true),
                       TextFormField(
                         controller: _preOpPulseController,
                         keyboardType: TextInputType.number,
@@ -4708,12 +4840,12 @@ class _OTManagementScreenState extends State<OTManagementScreen> {
                           return null;
                         },
                         decoration: AppTheme.standardInputDecoration(
-                          label: 'Pulse (bpm)',
                           prefixIcon: Icons.favorite_outline,
                           hintText: '40–200',
                         ),
                       ),
                       const SizedBox(height: 12),
+                      _buildFieldLabel('Temp (°F)', isRequired: true),
                       TextFormField(
                         controller: _preOpTempController,
                         keyboardType: const TextInputType.numberWithOptions(decimal: true),
@@ -4730,12 +4862,12 @@ class _OTManagementScreenState extends State<OTManagementScreen> {
                           return null;
                         },
                         decoration: AppTheme.standardInputDecoration(
-                          label: 'Temp (°F)',
                           prefixIcon: Icons.thermostat_outlined,
                           hintText: '90–115',
                         ),
                       ),
                       const SizedBox(height: 12),
+                      _buildFieldLabel('SpO2 (%)', isRequired: true),
                       TextFormField(
                         controller: _preOpSpo2Controller,
                         keyboardType: TextInputType.number,
@@ -4750,7 +4882,6 @@ class _OTManagementScreenState extends State<OTManagementScreen> {
                           return null;
                         },
                         decoration: AppTheme.standardInputDecoration(
-                          label: 'SpO2 (%)',
                           prefixIcon: Icons.bloodtype_outlined,
                           hintText: '70–100',
                         ),
@@ -4758,94 +4889,115 @@ class _OTManagementScreenState extends State<OTManagementScreen> {
                     ],
                   )
                 : Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Expanded(
-                        child: TextFormField(
-                          controller: _preOpBpController,
-                          keyboardType: TextInputType.number,
-                          autovalidateMode: AutovalidateMode.onUserInteraction,
-                          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                          validator: (val) {
-                            if (val == null || val.trim().isEmpty) return 'Please enter BP';
-                            final num = int.tryParse(val.trim());
-                            if (num == null) return 'BP must be an integer';
-                            if (num == 0) return 'BP cannot be 0';
-                            if (num < 90 || num > 300) return 'BP must be between 90–300 mmHg';
-                            return null;
-                          },
-                          decoration: AppTheme.standardInputDecoration(
-                            label: 'BP (mmHg)',
-                            prefixIcon: Icons.monitor_heart_outlined,
-                            hintText: '90–300',
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: TextFormField(
-                          controller: _preOpPulseController,
-                          keyboardType: TextInputType.number,
-                          autovalidateMode: AutovalidateMode.onUserInteraction,
-                          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                          validator: (val) {
-                            if (val == null || val.trim().isEmpty) return 'Please enter Pulse';
-                            final num = int.tryParse(val.trim());
-                            if (num == null) return 'Pulse must be an integer';
-                            if (num == 0) return 'Pulse cannot be 0';
-                            if (num < 40 || num > 200) return 'Pulse must be between 40–200 bpm';
-                            return null;
-                          },
-                          decoration: AppTheme.standardInputDecoration(
-                            label: 'Pulse (bpm)',
-                            prefixIcon: Icons.favorite_outline,
-                            hintText: '40–200',
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: TextFormField(
-                          controller: _preOpTempController,
-                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                          autovalidateMode: AutovalidateMode.onUserInteraction,
-                          inputFormatters: [
-                            FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            _buildFieldLabel('BP (mmHg)', isRequired: true),
+                            TextFormField(
+                              controller: _preOpBpController,
+                              keyboardType: TextInputType.number,
+                              autovalidateMode: AutovalidateMode.onUserInteraction,
+                              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                              validator: (val) {
+                                if (val == null || val.trim().isEmpty) return 'Please enter BP';
+                                final num = int.tryParse(val.trim());
+                                if (num == null) return 'BP must be an integer';
+                                if (num == 0) return 'BP cannot be 0';
+                                if (num < 90 || num > 300) return 'BP must be between 90–300 mmHg';
+                                return null;
+                              },
+                              decoration: AppTheme.standardInputDecoration(
+                                prefixIcon: Icons.monitor_heart_outlined,
+                                hintText: '90–300',
+                              ),
+                            ),
                           ],
-                          validator: (val) {
-                            if (val == null || val.trim().isEmpty) return 'Please enter Temperature';
-                            final num = double.tryParse(val.trim());
-                            if (num == null) return 'Temperature must be a number';
-                            if (num == 0) return 'Temperature cannot be 0';
-                            if (num < 90 || num > 115) return 'Temperature must be between 90–115 °F';
-                            return null;
-                          },
-                          decoration: AppTheme.standardInputDecoration(
-                            label: 'Temp (°F)',
-                            prefixIcon: Icons.thermostat_outlined,
-                            hintText: '90–115',
-                          ),
                         ),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
-                        child: TextFormField(
-                          controller: _preOpSpo2Controller,
-                          keyboardType: TextInputType.number,
-                          autovalidateMode: AutovalidateMode.onUserInteraction,
-                          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                          validator: (val) {
-                            if (val == null || val.trim().isEmpty) return 'Please enter SpO2';
-                            final num = int.tryParse(val.trim());
-                            if (num == null) return 'SpO2 must be an integer';
-                            if (num == 0) return 'SpO2 cannot be 0';
-                            if (num < 70 || num > 100) return 'SpO2 must be between 70–100 %';
-                            return null;
-                          },
-                          decoration: AppTheme.standardInputDecoration(
-                            label: 'SpO2 (%)',
-                            prefixIcon: Icons.bloodtype_outlined,
-                            hintText: '70–100',
-                          ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            _buildFieldLabel('Pulse (bpm)', isRequired: true),
+                            TextFormField(
+                              controller: _preOpPulseController,
+                              keyboardType: TextInputType.number,
+                              autovalidateMode: AutovalidateMode.onUserInteraction,
+                              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                              validator: (val) {
+                                if (val == null || val.trim().isEmpty) return 'Please enter Pulse';
+                                final num = int.tryParse(val.trim());
+                                if (num == null) return 'Pulse must be an integer';
+                                if (num == 0) return 'Pulse cannot be 0';
+                                if (num < 40 || num > 200) return 'Pulse must be between 40–200 bpm';
+                                return null;
+                              },
+                              decoration: AppTheme.standardInputDecoration(
+                                prefixIcon: Icons.favorite_outline,
+                                hintText: '40–200',
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            _buildFieldLabel('Temp (°F)', isRequired: true),
+                            TextFormField(
+                              controller: _preOpTempController,
+                              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                              autovalidateMode: AutovalidateMode.onUserInteraction,
+                              inputFormatters: [
+                                FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
+                              ],
+                              validator: (val) {
+                                if (val == null || val.trim().isEmpty) return 'Please enter Temperature';
+                                final num = double.tryParse(val.trim());
+                                if (num == null) return 'Temperature must be a number';
+                                if (num == 0) return 'Temperature cannot be 0';
+                                if (num < 90 || num > 115) return 'Temperature must be between 90–115 °F';
+                                return null;
+                              },
+                              decoration: AppTheme.standardInputDecoration(
+                                prefixIcon: Icons.thermostat_outlined,
+                                hintText: '90–115',
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            _buildFieldLabel('SpO2 (%)', isRequired: true),
+                            TextFormField(
+                              controller: _preOpSpo2Controller,
+                              keyboardType: TextInputType.number,
+                              autovalidateMode: AutovalidateMode.onUserInteraction,
+                              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                              validator: (val) {
+                                if (val == null || val.trim().isEmpty) return 'Please enter SpO2';
+                                final num = int.tryParse(val.trim());
+                                if (num == null) return 'SpO2 must be an integer';
+                                if (num == 0) return 'SpO2 cannot be 0';
+                                if (num < 70 || num > 100) return 'SpO2 must be between 70–100 %';
+                                return null;
+                              },
+                              decoration: AppTheme.standardInputDecoration(
+                                prefixIcon: Icons.bloodtype_outlined,
+                                hintText: '70–100',
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     ],
@@ -7261,48 +7413,57 @@ class _OTManagementScreenState extends State<OTManagementScreen> {
         decoration: _noLabelDecoration(hintText: 'enter remarks'),
       ),
       const SizedBox(height: 24),
-      Padding(
-        padding: const EdgeInsets.only(right: 40.0),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.end,
-          children: [
-            OutlinedButton(
-              onPressed: () {
-                setState(() {
-                  _selectedCase = null;
-                  _selectedPatientId = null;
-                  _selectedPatientDisplayId = null;
-                  _selectedOtRoom = null;
-                  _selectedNurseNames = [];
-                  _patientNameController.clear();
-                  _ageController.clear();
-                  _diagnosisController.clear();
-                  _remarksController.clear();
-                  _surgeonController.clear();
-                  _anaesthetistController.clear();
-                });
-              },
-              style: AppTheme.cancelButton,
-              child: const Text('Cancel'),
-            ),
-            const SizedBox(width: 12),
-            ElevatedButton.icon(
-              onPressed: _saveSurgeryRequest,
-              icon: const Icon(Icons.save),
-              label: const Text('Schedule Surgery & Open Case File'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.red,
-                foregroundColor: Colors.white,
-                minimumSize: const Size(180, 48),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
+      widget.isMobile
+          ? Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                ElevatedButton.icon(
+                  onPressed: _saveSurgeryRequest,
+                  icon: const Icon(Icons.save),
+                  label: const Text('Schedule Surgery & Open Case File'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.dangerColor,
+                    foregroundColor: Colors.white,
+                    minimumSize: const Size(double.infinity, 48),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    elevation: 0,
+                  ),
                 ),
-                elevation: 0,
-              ),
+                const SizedBox(height: 12),
+                OutlinedButton(
+                  onPressed: _cancelSurgeryRequest,
+                  style: AppTheme.cancelButton,
+                  child: const Text('Cancel'),
+                ),
+              ],
+            )
+          : Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                OutlinedButton(
+                  onPressed: _cancelSurgeryRequest,
+                  style: AppTheme.cancelButton,
+                  child: const Text('Cancel'),
+                ),
+                const SizedBox(width: 12),
+                ElevatedButton.icon(
+                  onPressed: _saveSurgeryRequest,
+                  icon: const Icon(Icons.save),
+                  label: const Text('Schedule Surgery & Open Case File'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.dangerColor,
+                    foregroundColor: Colors.white,
+                    minimumSize: const Size(180, 48),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    elevation: 0,
+                  ),
+                ),
+              ],
             ),
-          ],
-        ),
-      ),
     ];
   }
 }
