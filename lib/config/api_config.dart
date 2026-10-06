@@ -18,6 +18,9 @@ class ApiEndpoints {
     defaultValue: '',
   );
 
+  /// Default live production backend URL fallback
+  static const String productionFallbackUrl = 'https://spmc-backend.onrender.com/api';
+
   /// Gets the active base URL dynamically.
   static String get baseUrl {
     // 1. Check flutter_dotenv configuration (if explicitly set in .env)
@@ -60,7 +63,12 @@ class ApiEndpoints {
       return 'http://localhost:$port/api';
     }
 
-    // 5. Mobile device over Wi-Fi
+    // 5. In release mode (APK), default to production backend if not locally overridden
+    if (kReleaseMode) {
+      return productionFallbackUrl;
+    }
+
+    // 6. Mobile device over Wi-Fi (debug)
     return 'http://$backendIp:$port/api';
   }
 }
