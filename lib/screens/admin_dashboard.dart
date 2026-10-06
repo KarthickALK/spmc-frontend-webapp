@@ -400,10 +400,12 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   }
 
   void _showAddUserDialog(BuildContext context) {
+    final currentUserRole =
+        Provider.of<AuthProvider>(context, listen: false).user?.role ?? '';
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) => const AddUserDialog(),
+      builder: (context) => AddUserDialog(currentUserRole: currentUserRole),
     ).then((_) => _loadStaff()); // Refresh list after dialog closes
   }
 
@@ -607,7 +609,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
         }
         return const AccessDeniedWidget();
       case 3:
-        if (user?.role == 'Super Admin') {
+        if (user?.role == 'Super Admin' || user?.role == 'Admin') {
           return RbacManagementWidget(isMobile: isMobile);
         }
         return const AccessDeniedWidget();
@@ -5545,24 +5547,32 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   // --- Home Visit Care Section (Admin Only Schedule) ---
 
   Widget _buildAdminHomeVisitCare(bool isMobile) {
+    final langProvider = Provider.of<LanguageProvider>(context);
     if (_selectedHomeVisitId != null) {
-      return HomeVisitExecutionScreen(
-        key: ValueKey('admin_home_visit_${_selectedHomeVisitId}'),
-        visitId: _selectedHomeVisitId!,
-        isReadOnlyView: true,
-        onBack: () {
-          setState(() {
-            _selectedHomeVisitId = null;
-          });
-          context.go(AppRoutes.adminHomeVisits);
-        },
+      return Localizations.override(
+        context: context,
+        locale: langProvider.locale,
+        child: HomeVisitExecutionScreen(
+          key: ValueKey('admin_home_visit_${_selectedHomeVisitId}'),
+          visitId: _selectedHomeVisitId!,
+          isReadOnlyView: true,
+          onBack: () {
+            setState(() {
+              _selectedHomeVisitId = null;
+            });
+            context.go(AppRoutes.adminHomeVisits);
+          },
+        ),
       );
     }
 
-    return Consumer<LanguageProvider>(
-      builder: (context, langProvider, child) {
-        return Container(
-          color: AppTheme.backgroundColor,
+    return Localizations.override(
+      context: context,
+      locale: langProvider.locale,
+      child: Consumer<LanguageProvider>(
+        builder: (context, langProvider, child) {
+          return Container(
+            color: AppTheme.backgroundColor,
           child: Column(
             children: [
               Container(
@@ -5737,9 +5747,11 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             ],
           ),
         );
-      },
+        },
+      ),
     );
   }
+
 
   void _showAdminScheduleVisitDialog(BuildContext context) async {
     List<UserModel> availableNurses = _nurses;
@@ -5770,13 +5782,17 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
 
     String selectedShiftKey = 'morning';
 
+    final _adminDialogLocale = Provider.of<LanguageProvider>(context, listen: false).locale;
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (dialogCtx) => Consumer<LanguageProvider>(
-        builder: (context, langProvider, child) => StatefulBuilder(
-          builder: (context, setDialogState) {
-            final bool isTamil = langProvider.isTamil;
+      builder: (dialogCtx) => Localizations.override(
+        context: dialogCtx,
+        locale: _adminDialogLocale,
+        child: Consumer<LanguageProvider>(
+          builder: (context, langProvider, child) => StatefulBuilder(
+            builder: (context, setDialogState) {
+              final bool isTamil = langProvider.isTamil;
             final homeVisitCtrl = Provider.of<HomeVisitController>(
               context,
               listen: false,
@@ -5852,7 +5868,8 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                   ),
                   InkWell(
                     onTap: () {
-                      langProvider.toggleLanguage();
+                      final auth = Provider.of<AuthProvider>(context, listen: false);
+                      langProvider.toggleLanguage(userId: auth.user?.id);
                     },
                     borderRadius: BorderRadius.circular(20),
                     child: Container(
@@ -6301,10 +6318,12 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
               ],
             );
           },
+          ),
         ),
       ),
     );
   }
+
 
   // --- Helpers & Dialogs ---
 
@@ -14827,7 +14846,8 @@ class _EditStaffDialogState extends State<EditStaffDialog> {
 }
 
 class AddUserDialog extends StatefulWidget {
-  const AddUserDialog({Key? key}) : super(key: key);
+  final String currentUserRole;
+  const AddUserDialog({Key? key, required this.currentUserRole}) : super(key: key);
 
   @override
   State<AddUserDialog> createState() => _AddUserDialogState();
@@ -14875,6 +14895,18 @@ class _AddUserDialogState extends State<AddUserDialog> {
   @override
   void initState() {
     super.initState();
+    if (widget.currentUserRole == 'Super Admin') {
+      _roles = [
+        'Super Admin',
+        'Admin',
+        'Doctor',
+        'Nurse',
+        'Anaesthetist',
+        'Front Desk',
+        'Lab',
+        'Pharmacy',
+      ];
+    }
     _passwordController.text = PasswordPolicy.generateSecurePassword();
     _loadSpecializations();
     _loadRoles();
@@ -15179,13 +15211,37 @@ class _AddUserDialogState extends State<AddUserDialog> {
 
   Future<void> _loadRoles() async {
     setState(() => _isLoadingRoles = true);
+    final isSuperAdmin = widget.currentUserRole == 'Super Admin';
     try {
       final rbacData = await _adminController.fetchRbacData();
       final rolesList = rbacData['roles'] as List<dynamic>? ?? [];
+      final orderedRoles = [
+        'Super Admin',
+        'Admin',
+        'Doctor',
+        'Nurse',
+        'Anaesthetist',
+        'Front Desk',
+        'Lab',
+        'Pharmacy',
+      ];
       final names = rolesList
-          .map((r) => r['name']?.toString() ?? '')
-          .where((name) => name.isNotEmpty && name != 'Super Admin')
+          .map((r) => (r['role_name'] ?? r['name'])?.toString() ?? '')
+          .where((name) {
+            if (name.isEmpty) return false;
+            // Only Super Admin can create Super Admin or Admin accounts
+            if (name == 'Super Admin' || name == 'Admin') return isSuperAdmin;
+            return true;
+          })
           .toList();
+      names.sort((a, b) {
+        int indexA = orderedRoles.indexOf(a);
+        int indexB = orderedRoles.indexOf(b);
+        if (indexA == -1 && indexB == -1) return a.compareTo(b);
+        if (indexA == -1) return 1;
+        if (indexB == -1) return -1;
+        return indexA.compareTo(indexB);
+      });
       if (mounted) {
         setState(() {
           if (names.isNotEmpty) _roles = names;
