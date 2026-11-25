@@ -7,6 +7,7 @@ class AppRoutes {
 
   // Common Protected Routes
   static const String dashboard = '/dashboard';
+  static const String accessDenied = '/access-denied';
 
   // Admin Routes
   static const String adminDashboard = '/admin/dashboard';
@@ -29,10 +30,18 @@ class AppRoutes {
   static const String adminHomeVisits = '/admin/home-visits';
   static const String adminHomeVisitSummary = '/admin/home-visits/summary/:id';
   static const String adminMedicationCatalog = '/admin/medication-catalog';
-  static const String adminHomeVisitConsumables = '/admin/home-visit-consumables';
+  static const String adminHomeVisitConsumables =
+      '/admin/home-visit-consumables';
   static const String adminCarriedKitItems = '/admin/carried-kit-items';
   static const String adminIpdBeds = '/admin/ipd-beds';
-
+  static const String adminBillingServices = '/admin/billing-services';
+  static const String adminLabTestsMaster = '/admin/lab-tests-master';
+  static const String adminSpecializations = '/admin/specializations-master';
+  static const String adminDbInitialization = '/admin/db-initialization';
+  static const String adminDepartments = '/admin/departments';
+  static const String adminOperationTheatres = '/admin/operation-theatres';
+  static const String adminNurseShifts = '/admin/nurse-shifts';
+  static const String adminRegionalAddress = '/admin/regional-address';
 
   // Nurse Routes
   static const String nurseDashboard = '/nurse/dashboard';
@@ -71,6 +80,8 @@ class AppRoutes {
   static const String doctorOt = '/doctor/ot-management';
   static const String doctorDictation = '/doctor/ai-dictation';
   static const String doctorLabReports = '/doctor/lab-reports';
+  static const String doctorPatientRegistry = '/doctor/patient-registry';
+  static const String doctorAppointments = '/doctor/appointments';
 
   // Reception & Front Desk Routes
   static const String receptionDashboard = '/reception/dashboard';

@@ -5,6 +5,7 @@ import '../controllers/auth_controller.dart';
 import '../exceptions/network_exception.dart';
 import '../models/user_model.dart';
 import '../services/token_service.dart';
+import '../utils/unsaved_changes_helper.dart';
 
 class AuthProvider extends ChangeNotifier {
 
@@ -29,6 +30,7 @@ class AuthProvider extends ChangeNotifier {
             await TokenService.saveUser(jsonEncode(_user!.toJson()));
             notifyListeners();
           }
+          startPermissionWatcher();
         } on UnauthorizedSessionException {
           // Token is expired or unauthorized -> log out cleanly so user can log in
           await logout();
@@ -45,13 +47,37 @@ class AuthProvider extends ChangeNotifier {
   String? _errorCode;
 
   UserModel? get user => _user;
+  String? get token => _user?.token;
   bool get isLoading => _isLoading;
   String? get errorMessage => _errorMessage;
   String? get errorCode => _errorCode;
 
+  Timer? _permissionRefreshTimer;
+
+  void startPermissionWatcher() {
+    _permissionRefreshTimer?.cancel();
+    _permissionRefreshTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+      if (_user != null) {
+        refreshPermissions();
+      }
+    });
+  }
+
+  void stopPermissionWatcher() {
+    _permissionRefreshTimer?.cancel();
+    _permissionRefreshTimer = null;
+  }
+
   Future<void> refreshPermissions() async {
     if (_user == null) return;
     try {
+      final freshUser = await _authController.fetchMe();
+      if (freshUser != null) {
+        _user = freshUser.copyWith(token: freshUser.token ?? _user?.token);
+        await TokenService.saveUser(jsonEncode(_user!.toJson()));
+        notifyListeners();
+        return;
+      }
       final permissionsJson = await _authController.fetchLivePermissions();
       _user = _user!.updateFromPermissions(permissionsJson);
       notifyListeners();
@@ -103,6 +129,7 @@ class AuthProvider extends ChangeNotifier {
       if (user != null) {
         _user = user;
         await TokenService.saveUser(jsonEncode(user.toJson()));
+        startPermissionWatcher();
         _isLoading = false;
         notifyListeners();
         return true;
@@ -179,6 +206,8 @@ class AuthProvider extends ChangeNotifier {
   }
 
   Future<void> logout() async {
+    stopPermissionWatcher();
+    UnsavedChangesHelper.clear();
     await TokenService.deleteToken();
     await TokenService.deleteUser();
     _user = null;
@@ -197,5 +226,11 @@ class AuthProvider extends ChangeNotifier {
       TokenService.saveUser(jsonEncode(_user!.toJson()));
       notifyListeners();
     }
+  }
+
+  @override
+  void dispose() {
+    stopPermissionWatcher();
+    super.dispose();
   }
 }

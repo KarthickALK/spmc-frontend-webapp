@@ -16,13 +16,20 @@ import '../../screens/front_desk_dashboard.dart';
 import '../../screens/lab_dashboard.dart';
 import '../../screens/pharmacy_dashboard.dart';
 import '../../screens/ipd_patient_detail_page.dart';
+import '../../utils/app_theme.dart';
+import '../../utils/logout_helper.dart';
 import '../../utils/modal_history_observer.dart';
+import '../../utils/unsaved_changes_helper.dart';
+import '../../widgets/access_denied_widget.dart';
 import 'route_constants.dart';
 import 'screens/not_found_screen.dart';
 
 class AppRouter {
   static final GlobalKey<NavigatorState> parentNavigatorKey =
       GlobalKey<NavigatorState>();
+
+  static Map<String, dynamic>? _lastKnownDoctorIpdAdmission;
+  static Map<String, dynamic>? _lastKnownNurseIpdAdmission;
 
   static PatientModel? _parsePatient(dynamic extra) {
     if (extra == null) return null;
@@ -74,9 +81,7 @@ class AppRouter {
       initialLocation: AppRoutes.login,
       debugLogDiagnostics: true,
       refreshListenable: authProvider,
-      observers: [
-        ModalHistoryObserver(),
-      ],
+      observers: [ModalHistoryObserver()],
 
       // 🛑 ROUTE GUARDS & DYNAMIC REDIRECTION (Auth & Role-Based Checks)
       redirect: (context, state) {
@@ -89,13 +94,43 @@ class AppRouter {
 
         // 1. Unauthenticated Users: Redirect to Login
         if (!isLoggedIn) {
+          UnsavedChangesHelper.clear();
           if (!goingToPublic) {
             return AppRoutes.login;
           }
           return null; // Stay on public screen
         }
 
-        // 2. Authenticated Users attempting to access public routes or generic /dashboard: Redirect directly to role dashboard
+        // 2. Validate Role — if user's role has been deleted or unassigned, immediately display Access Denied
+        final userRole = authProvider.user!.role.trim();
+        const validRoles = [
+          'Super Admin',
+          'Admin',
+          'Supervisor',
+          'Doctor',
+          'Anaesthetist',
+          'Nurse',
+          'Head Nurse',
+          'Front Desk',
+          'Receptionist',
+          'Reception',
+          'Lab',
+          'Pharmacy',
+        ];
+
+        if (userRole.isEmpty || !validRoles.contains(userRole)) {
+          if (state.matchedLocation != AppRoutes.accessDenied) {
+            return AppRoutes.accessDenied;
+          }
+          return null;
+        }
+
+        // If user now has a valid role and tries to visit access denied screen, send to dashboard
+        if (state.matchedLocation == AppRoutes.accessDenied) {
+          return AppRoutes.dashboard;
+        }
+
+        // 3. Authenticated Users attempting to access public routes or generic /dashboard: Redirect directly to role dashboard
         if (goingToPublic || state.matchedLocation == AppRoutes.dashboard) {
           final role = authProvider.user!.role;
           if (role == 'Nurse' || role == 'Head Nurse') {
@@ -112,14 +147,16 @@ class AppRouter {
             return AppRoutes.labDashboard;
           } else if (role == 'Pharmacy') {
             return AppRoutes.pharmacyDashboard;
-          } else {
+          } else if (role == 'Doctor' || role == 'Anaesthetist') {
             return AppRoutes.doctorDashboard;
+          } else {
+            return AppRoutes.accessDenied;
           }
         }
 
         // 4. Role-based Route Prefix Guarding
-        final userRole = authProvider.user!.role;
         final path = state.matchedLocation;
+        final currentUser = authProvider.user!;
 
         if (path.startsWith('/admin')) {
           final isAdmin =
@@ -128,6 +165,46 @@ class AppRouter {
               userRole == 'Super Admin';
           if (!isAdmin) {
             return AppRoutes.dashboard; // Redirect to user's home dashboard
+          }
+          if (path == AppRoutes.adminUsers &&
+              !currentUser.hasPermission('manage_users')) {
+            return AppRoutes.adminDashboard;
+          }
+          if (path == AppRoutes.adminPatients &&
+              !currentUser.hasPermission('view_patients')) {
+            return AppRoutes.adminDashboard;
+          }
+          if (path == AppRoutes.adminSettings &&
+              !currentUser.hasPermission('manage_rbac')) {
+            return AppRoutes.adminDashboard;
+          }
+          if (path == AppRoutes.adminAppointments &&
+              !currentUser.hasPermission('book_appointment')) {
+            return AppRoutes.adminDashboard;
+          }
+          if (path == AppRoutes.adminOpd &&
+              !currentUser.hasPermission('opd_assistance')) {
+            return AppRoutes.adminDashboard;
+          }
+          if (path == AppRoutes.adminIpd &&
+              !currentUser.hasPermission('ipd_doctor_rounds')) {
+            return AppRoutes.adminDashboard;
+          }
+          if (path == AppRoutes.adminOt &&
+              !currentUser.hasPermission('ot_surgeries')) {
+            return AppRoutes.adminDashboard;
+          }
+          if (path == AppRoutes.adminShifts &&
+              !currentUser.hasPermission('manage_shifts')) {
+            return AppRoutes.adminDashboard;
+          }
+          if (path == AppRoutes.adminBilling &&
+              !currentUser.hasPermission('op_billing')) {
+            return AppRoutes.adminDashboard;
+          }
+          if (path == AppRoutes.adminHomeVisits &&
+              !currentUser.hasPermission('home_visit_care')) {
+            return AppRoutes.adminDashboard;
           }
           if ((path == AppRoutes.adminViewPatient ||
                   path == AppRoutes.adminEditPatient) &&
@@ -139,8 +216,48 @@ class AppRouter {
           if (!isNurse) {
             return AppRoutes.dashboard;
           }
-          if (path == AppRoutes.nurseIpdMonitoring && state.extra == null) {
-            return AppRoutes.nurseIpd;
+          if ((path == AppRoutes.nursePatients ||
+                  path == AppRoutes.nurseViewPatient) &&
+              !currentUser.hasPermission('view_patients')) {
+            return AppRoutes.nurseDashboard;
+          }
+          if ((path == AppRoutes.nurseNewPatient ||
+                  path == AppRoutes.nurseEditPatient) &&
+              !currentUser.hasPermission('add_patient') &&
+              !currentUser.hasPermission('edit_patients')) {
+            return AppRoutes.nurseDashboard;
+          }
+          if ((path == AppRoutes.nurseAppointments ||
+                  path == AppRoutes.nurseBookAppointment) &&
+              !currentUser.hasPermission('book_appointment')) {
+            return AppRoutes.nurseDashboard;
+          }
+          if (path == AppRoutes.nurseOpd &&
+              !currentUser.hasPermission('opd_assistance')) {
+            return AppRoutes.nurseDashboard;
+          }
+          if (path == AppRoutes.nurseIpd &&
+              !currentUser.hasPermission('ipd_nursing_care') &&
+              !currentUser.hasPermission('ipd_admission_counter')) {
+            return AppRoutes.nurseDashboard;
+          }
+          if (path == AppRoutes.nurseOt &&
+              !currentUser.hasPermission('ot_nursing_consumables') &&
+              !currentUser.hasPermission('ot_who_checklist')) {
+            return AppRoutes.nurseDashboard;
+          }
+          if (path == AppRoutes.nurseHomeVisits &&
+              !currentUser.hasPermission('home_visit_care')) {
+            return AppRoutes.nurseDashboard;
+          }
+          if (path == AppRoutes.nurseIpdMonitoring) {
+            if (state.extra != null && state.extra is Map) {
+              _lastKnownNurseIpdAdmission = Map<String, dynamic>.from(
+                state.extra as Map,
+              );
+            } else if (_lastKnownNurseIpdAdmission == null) {
+              return AppRoutes.nurseIpd;
+            }
           }
           if ((path == AppRoutes.nurseViewPatient ||
                   path == AppRoutes.nurseEditPatient) &&
@@ -151,6 +268,40 @@ class AppRouter {
           final isDoctor = userRole == 'Doctor' || userRole == 'Anaesthetist';
           if (!isDoctor) {
             return AppRoutes.dashboard;
+          }
+          if ((path == AppRoutes.doctorConsultation ||
+                  path == AppRoutes.doctorDashboardConsultation) &&
+              !currentUser.hasPermission('conduct_consultations') &&
+              !isDoctor) {
+            return AppRoutes.doctorDashboard;
+          }
+          if (path == AppRoutes.doctorLabReports &&
+              !currentUser.hasPermission('view_lab_reports')) {
+            return AppRoutes.doctorDashboard;
+          }
+          if (path == AppRoutes.doctorPatientRegistry &&
+              !currentUser.hasPermission('view_patients')) {
+            return AppRoutes.doctorDashboard;
+          }
+          if (path == AppRoutes.doctorAppointments &&
+              !currentUser.hasPermission('book_appointment')) {
+            return AppRoutes.doctorDashboard;
+          }
+          if ((path == AppRoutes.doctorIpd ||
+                  path == AppRoutes.doctorIpdMonitoring) &&
+              !currentUser.hasPermission('ipd_doctor_rounds') &&
+              !isDoctor) {
+            return AppRoutes.doctorDashboard;
+          }
+          if (path == AppRoutes.doctorOt &&
+              !currentUser.hasPermission('ot_surgeries') &&
+              !currentUser.hasPermission('ot_anaesthesia_pac')) {
+            return AppRoutes.doctorDashboard;
+          }
+          if (path == AppRoutes.doctorDictation &&
+              !currentUser.hasPermission('ot_surgeries') &&
+              !currentUser.hasPermission('ot_anaesthesia_pac')) {
+            return AppRoutes.doctorDashboard;
           }
           if ((path == AppRoutes.doctorDictation ||
                   path == AppRoutes.doctorLabReports) &&
@@ -165,8 +316,14 @@ class AppRouter {
               state.extra == null) {
             return AppRoutes.doctorPatients;
           }
-          if (path == AppRoutes.doctorIpdMonitoring && state.extra == null) {
-            return AppRoutes.doctorIpd;
+          if (path == AppRoutes.doctorIpdMonitoring) {
+            if (state.extra != null && state.extra is Map) {
+              _lastKnownDoctorIpdAdmission = Map<String, dynamic>.from(
+                state.extra as Map,
+              );
+            } else if (_lastKnownDoctorIpdAdmission == null) {
+              return AppRoutes.doctorIpd;
+            }
           }
         } else if (path.startsWith('/reception')) {
           // Allow reception routes or redirect (in case reception features are merged with Nurse)
@@ -178,6 +335,24 @@ class AppRouter {
               userRole == 'Head Nurse';
           if (!isReception) {
             return AppRoutes.dashboard;
+          }
+          if ((path == AppRoutes.frontDeskPatients ||
+                  path == AppRoutes.frontDeskViewPatient) &&
+              !currentUser.hasPermission('view_patients')) {
+            return AppRoutes.receptionDashboard;
+          }
+          if ((path == AppRoutes.frontDeskAppointments ||
+                  path == AppRoutes.frontDeskBookAppointment) &&
+              !currentUser.hasPermission('book_appointment')) {
+            return AppRoutes.receptionDashboard;
+          }
+          if (path == AppRoutes.frontDeskAdmissionCounter &&
+              !currentUser.hasPermission('ipd_admission_counter')) {
+            return AppRoutes.receptionDashboard;
+          }
+          if (path == AppRoutes.frontDeskBilling &&
+              !currentUser.hasPermission('op_billing')) {
+            return AppRoutes.receptionDashboard;
           }
           if ((path == AppRoutes.frontDeskViewPatient ||
                   path == AppRoutes.frontDeskEditPatient) &&
@@ -201,6 +376,30 @@ class AppRouter {
 
       // 📡 PUBLIC & PROTECTED ROUTE DEFINITIONS
       routes: [
+        // --- Access Denied Screen ---
+        GoRoute(
+          path: AppRoutes.accessDenied,
+          builder: (context, state) => Scaffold(
+            appBar: AppBar(
+              title: const Text('Access Restricted'),
+              backgroundColor: AppTheme.primaryColor,
+              foregroundColor: Colors.white,
+              actions: [
+                IconButton(
+                  icon: const Icon(Icons.logout),
+                  tooltip: 'Logout',
+                  onPressed: () => LogoutHelper.logout(context),
+                ),
+              ],
+            ),
+            body: AccessDeniedWidget(
+              message:
+                  'Access Denied: Your assigned role has been deleted or unassigned. You do not have access to any functionality. Please contact your system administrator.',
+              onBack: () => LogoutHelper.logout(context),
+            ),
+          ),
+        ),
+
         // --- Public Routes ---
         GoRoute(
           path: AppRoutes.login,
@@ -404,6 +603,62 @@ class AppRouter {
             child: AdminDashboardScreen(initialIndex: 16),
           ),
         ),
+        GoRoute(
+          path: AppRoutes.adminBillingServices,
+          pageBuilder: (context, state) => const NoTransitionPage(
+            key: ValueKey('admin_dashboard'),
+            child: AdminDashboardScreen(initialIndex: 17),
+          ),
+        ),
+        GoRoute(
+          path: AppRoutes.adminLabTestsMaster,
+          pageBuilder: (context, state) => const NoTransitionPage(
+            key: ValueKey('admin_dashboard'),
+            child: AdminDashboardScreen(initialIndex: 18),
+          ),
+        ),
+        GoRoute(
+          path: AppRoutes.adminSpecializations,
+          pageBuilder: (context, state) => const NoTransitionPage(
+            key: ValueKey('admin_dashboard'),
+            child: AdminDashboardScreen(initialIndex: 19),
+          ),
+        ),
+        GoRoute(
+          path: AppRoutes.adminDbInitialization,
+          pageBuilder: (context, state) => const NoTransitionPage(
+            key: ValueKey('admin_dashboard'),
+            child: AdminDashboardScreen(initialIndex: 20),
+          ),
+        ),
+        GoRoute(
+          path: AppRoutes.adminDepartments,
+          pageBuilder: (context, state) => const NoTransitionPage(
+            key: ValueKey('admin_dashboard'),
+            child: AdminDashboardScreen(initialIndex: 21),
+          ),
+        ),
+        GoRoute(
+          path: AppRoutes.adminOperationTheatres,
+          pageBuilder: (context, state) => const NoTransitionPage(
+            key: ValueKey('admin_dashboard'),
+            child: AdminDashboardScreen(initialIndex: 22),
+          ),
+        ),
+        GoRoute(
+          path: AppRoutes.adminNurseShifts,
+          pageBuilder: (context, state) => const NoTransitionPage(
+            key: ValueKey('admin_dashboard'),
+            child: AdminDashboardScreen(initialIndex: 23),
+          ),
+        ),
+        GoRoute(
+          path: AppRoutes.adminRegionalAddress,
+          pageBuilder: (context, state) => const NoTransitionPage(
+            key: ValueKey('admin_dashboard'),
+            child: AdminDashboardScreen(initialIndex: 24),
+          ),
+        ),
 
         // --- Nurse Protected Routes ---
         GoRoute(
@@ -513,12 +768,19 @@ class AppRouter {
         ),
         GoRoute(
           path: AppRoutes.nurseIpdMonitoring,
-          pageBuilder: (context, state) => NoTransitionPage(
-            key: const ValueKey('nurse_ipd_monitoring'),
-            child: IPDPatientDetailPage(
-              admission: (state.extra as Map<String, dynamic>?) ?? {},
-            ),
-          ),
+          pageBuilder: (context, state) {
+            Map<String, dynamic> adm = {};
+            if (state.extra != null && state.extra is Map) {
+              adm = Map<String, dynamic>.from(state.extra as Map);
+              _lastKnownNurseIpdAdmission = adm;
+            } else if (_lastKnownNurseIpdAdmission != null) {
+              adm = _lastKnownNurseIpdAdmission!;
+            }
+            return NoTransitionPage(
+              key: const ValueKey('nurse_ipd_monitoring'),
+              child: IPDPatientDetailPage(admission: adm),
+            );
+          },
         ),
         GoRoute(
           path: AppRoutes.nurseOt,
@@ -662,7 +924,7 @@ class AppRouter {
         GoRoute(
           path: AppRoutes.doctorDashboardConsultation,
           pageBuilder: (context, state) => NoTransitionPage(
-            key: const ValueKey('doctor_dashboard'),
+            key: const ValueKey('doctor_dashboard_consultation'),
             child: DashboardScreen(
               initialIndex: 0,
               activeAppointment: _parseAppointment(state.extra),
@@ -672,7 +934,7 @@ class AppRouter {
         GoRoute(
           path: AppRoutes.doctorConsultationsEdit,
           pageBuilder: (context, state) => NoTransitionPage(
-            key: const ValueKey('doctor_dashboard'),
+            key: const ValueKey('doctor_consultations_edit'),
             child: DashboardScreen(
               initialIndex: 1,
               activeAppointment: _parseAppointment(state.extra),
@@ -702,12 +964,19 @@ class AppRouter {
         ),
         GoRoute(
           path: AppRoutes.doctorIpdMonitoring,
-          pageBuilder: (context, state) => NoTransitionPage(
-            key: const ValueKey('doctor_ipd_monitoring'),
-            child: IPDPatientDetailPage(
-              admission: (state.extra as Map<String, dynamic>?) ?? {},
-            ),
-          ),
+          pageBuilder: (context, state) {
+            Map<String, dynamic> adm = {};
+            if (state.extra != null && state.extra is Map) {
+              adm = Map<String, dynamic>.from(state.extra as Map);
+              _lastKnownDoctorIpdAdmission = adm;
+            } else if (_lastKnownDoctorIpdAdmission != null) {
+              adm = _lastKnownDoctorIpdAdmission!;
+            }
+            return NoTransitionPage(
+              key: const ValueKey('doctor_ipd_monitoring'),
+              child: IPDPatientDetailPage(admission: adm),
+            );
+          },
         ),
         GoRoute(
           path: AppRoutes.doctorOt,
@@ -720,7 +989,7 @@ class AppRouter {
           path: AppRoutes.doctorDictation,
           pageBuilder: (context, state) => const NoTransitionPage(
             key: ValueKey('doctor_dashboard'),
-            child: DashboardScreen(initialIndex: 5),
+            child: DashboardScreen(initialIndex: 4, initialOtTab: 4),
           ),
         ),
         GoRoute(
@@ -728,6 +997,20 @@ class AppRouter {
           pageBuilder: (context, state) => const NoTransitionPage(
             key: ValueKey('doctor_dashboard'),
             child: DashboardScreen(initialIndex: 6),
+          ),
+        ),
+        GoRoute(
+          path: AppRoutes.doctorPatientRegistry,
+          pageBuilder: (context, state) => const NoTransitionPage(
+            key: ValueKey('doctor_patients'),
+            child: DashboardScreen(initialIndex: 7),
+          ),
+        ),
+        GoRoute(
+          path: AppRoutes.doctorAppointments,
+          pageBuilder: (context, state) => const NoTransitionPage(
+            key: ValueKey('doctor_appointments'),
+            child: DashboardScreen(initialIndex: 8),
           ),
         ),
         GoRoute(

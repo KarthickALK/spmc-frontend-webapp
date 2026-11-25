@@ -15,7 +15,11 @@ import '../utils/date_formatter.dart';
 import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
 import '../utils/unsaved_changes_helper.dart';
+import '../utils/discard_dialog_helper.dart';
 import '../utils/app_localizations.dart';
+import '../widgets/consultation_documents_view.dart';
+import '../widgets/check_in_vitals_dialog.dart';
+import '../widgets/billing_receipt_dialog.dart';
 
 class OPDManagementScreen extends StatefulWidget {
   final bool isMobile;
@@ -45,35 +49,45 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
   // Filters
   final DateTime _selectedDate = DateTime.now(); // Locked to today for OPD
   String _selectedDoctor = 'All';
+  String _selectedPharmacyStatus = 'All';
+  String _selectedLabTest = 'All';
+  String _selectedDateFilter = 'All';
+  String _selectedSession = 'All'; // 'All', 'Morning', 'Evening'
   String _searchQuery = '';
   bool _isFilterVisible = false;
   final TextEditingController _searchCtrl = TextEditingController();
+  final Set<dynamic> _dispensingIds = {};
+  final Set<String> _collectedSampleKeys = {};
 
   List<UserModel> _doctors = [];
 
   @override
   void initState() {
     super.initState();
-    UnsavedChangesHelper.setUnsavedChanges(true);
+    UnsavedChangesHelper.clear();
     _tabController = TabController(length: 8, vsync: this);
+    _tabController.addListener(() {
+      if (mounted) setState(() {});
+    });
     _loadData();
     _loadDoctors();
   }
 
   @override
   void dispose() {
-    UnsavedChangesHelper.setUnsavedChanges(false);
     _tabController.dispose();
     _searchCtrl.dispose();
     super.dispose();
   }
 
-  Future<void> _loadData() async {
+  Future<void> _loadData({bool showLoading = true}) async {
     if (!mounted) return;
-    setState(() {
-      _isLoading = true;
-      _error = null;
-    });
+    if (showLoading) {
+      setState(() {
+        _isLoading = true;
+        _error = null;
+      });
+    }
     try {
       final dateStr = DateFormat('yyyy-MM-dd').format(_selectedDate);
       final data = await _appointmentController.fetchAdminAppointments(
@@ -159,6 +173,13 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
       }).toList();
     }
 
+    // 2. Doctor Session Shift Filter (Morning: 09:00 AM - 01:00 PM, Evening: 04:00 PM - 08:00 PM)
+    if (_selectedSession == 'Morning') {
+      apps = apps.where((a) => _isMorningSlot(a.appointmentTime)).toList();
+    } else if (_selectedSession == 'Evening') {
+      apps = apps.where((a) => !_isMorningSlot(a.appointmentTime)).toList();
+    }
+
     apps.sort(_newestFirst);
 
     return apps;
@@ -168,19 +189,44 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
     final baseApps = _filteredAppointments;
     switch (tabIndex) {
       case 0: // Confirmed (Awaiting arrival / vitals)
-        return baseApps.where((a) => a.status == 'Confirmed').toList();
+        return baseApps
+            .where((a) => a.status == 'Confirmed' || a.status == 'Scheduled')
+            .toList();
       case 1: // Waiting (Checked-in / Waiting queue)
         return baseApps
             .where(
               (a) =>
+                  a.status == 'Checked In' ||
                   a.status == 'Checked-in' ||
                   a.status == 'Waiting',
             )
             .toList();
       case 2: // In Consultation
         return baseApps.where((a) => a.status == 'In Consultation').toList();
-      case 3: // Completed – driven by consultations (all dates, not date-filtered)
-        return _consultations.map((c) {
+      case 3: // Completed – driven by consultations
+        var compList = _consultations;
+        if (_searchQuery.trim().isNotEmpty) {
+          final query = _searchQuery.trim().toLowerCase();
+          compList = compList.where((c) {
+            final name = (c['patient_name'] ?? '').toString().toLowerCase();
+            final pid = (c['patient_display_id'] ?? '').toString().toLowerCase();
+            final rawPid = (c['patient_id'] ?? '').toString().toLowerCase();
+            final phone = (c['patient_phone'] ?? '').toString().toLowerCase();
+            final doc = (c['doctor_name'] ?? '').toString().toLowerCase();
+            return name.contains(query) || pid.contains(query) || rawPid.contains(query) || phone.contains(query) || doc.contains(query);
+          }).toList();
+        }
+        if (_selectedDoctor != 'All') {
+          final target = _selectedDoctor.trim().toLowerCase();
+          compList = compList.where((c) {
+            final doc = (c['doctor_name'] ?? '').toString().trim().toLowerCase();
+            return doc == target || doc.contains(target);
+          }).toList();
+        }
+        if (_selectedDateFilter != 'All') {
+          compList = compList.where((c) => _matchesDateFilter(c['created_at'])).toList();
+        }
+        return compList.map((c) {
           return AppointmentModel(
             id: c['appointment_id'] is int
                 ? c['appointment_id']
@@ -211,15 +257,38 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
     }
   }
 
+  bool _isMorningSlot(String slot) {
+    try {
+      final clean = slot.trim().toUpperCase();
+      if (clean.contains('AM')) return true;
+      if (clean.contains('12:')) return true;
+      final parts = clean.split(' ');
+      final timeParts = parts[0].split(':');
+      final hour = int.parse(timeParts[0]);
+      if (clean.contains('PM') && hour == 1) return true;
+      return false;
+    } catch (_) {
+      return true;
+    }
+  }
+
   int _getCountForTab(int tabIndex) {
-    final walkins = _walkInAppointments;
+    var walkins = _walkInAppointments;
+    if (_selectedSession == 'Morning') {
+      walkins = walkins.where((a) => _isMorningSlot(a.appointmentTime)).toList();
+    } else if (_selectedSession == 'Evening') {
+      walkins = walkins.where((a) => !_isMorningSlot(a.appointmentTime)).toList();
+    }
     switch (tabIndex) {
       case 0: // Confirmed
-        return walkins.where((a) => a.status == 'Confirmed').length;
+        return walkins
+            .where((a) => a.status == 'Confirmed' || a.status == 'Scheduled')
+            .length;
       case 1: // Waiting
         return walkins
             .where(
               (a) =>
+                  a.status == 'Checked In' ||
                   a.status == 'Checked-in' ||
                   a.status == 'Waiting',
             )
@@ -227,6 +296,13 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
       case 2: // In Consultation
         return walkins.where((a) => a.status == 'In Consultation').length;
       case 3: // Completed
+        if (_selectedDoctor != 'All') {
+          final target = _selectedDoctor.trim().toLowerCase();
+          return _consultations.where((c) {
+            final doc = (c['doctor_name'] ?? '').toString().trim().toLowerCase();
+            return doc == target || doc.contains(target);
+          }).length;
+        }
         return _consultations.length;
       case 4: // Cancelled & No-Show
         return walkins
@@ -267,7 +343,9 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
           const SizedBox(height: 16),
           _buildSearchAndFilterRow(),
           if (_isFilterVisible) _buildFilterPanel(),
-          const SizedBox(height: 16),
+          const SizedBox(height: 12),
+          _buildSessionSelector(),
+          const SizedBox(height: 8),
           _buildTabBar(),
           Expanded(
             child: _isLoading
@@ -675,14 +753,18 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
   }
 
   Widget _buildFilterToggle() {
+    final hasActive = _hasActiveFilters;
     return InkWell(
       onTap: () => setState(() => _isFilterVisible = !_isFilterVisible),
       child: Container(
         height: 48,
         padding: const EdgeInsets.symmetric(horizontal: 16),
         decoration: BoxDecoration(
-          color: Colors.white,
-          border: Border.all(color: AppTheme.borderColor),
+          color: hasActive ? AppTheme.primaryColor.withOpacity(0.08) : Colors.white,
+          border: Border.all(
+            color: hasActive ? AppTheme.primaryColor : AppTheme.borderColor,
+            width: hasActive ? 1.5 : 1.0,
+          ),
           borderRadius: BorderRadius.circular(8),
         ),
         child: Row(
@@ -691,12 +773,16 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
             Icon(
               _isFilterVisible ? Icons.filter_list_off : Icons.filter_list,
               size: 18,
-              color: AppTheme.textPrimaryColor,
+              color: hasActive ? AppTheme.primaryColor : AppTheme.textPrimaryColor,
             ),
             const SizedBox(width: 8),
-            const Text(
-              'Filters',
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+            Text(
+              hasActive ? 'Filters (Active)' : 'Filters',
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 13,
+                color: hasActive ? AppTheme.primaryColor : AppTheme.textPrimaryColor,
+              ),
             ),
           ],
         ),
@@ -705,44 +791,151 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
   }
 
   Widget _buildFilterPanel() {
+    final currentTab = _tabController.index;
+    final isMobile = widget.isMobile;
+
     return Container(
       margin: EdgeInsets.only(
-        left: widget.isMobile ? 16 : 24,
-        right: widget.isMobile ? 16 : 24,
+        left: isMobile ? 16 : 24,
+        right: isMobile ? 16 : 24,
         top: 12,
       ),
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(12),
         border: Border.all(color: AppTheme.borderColor),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: _buildFilterDropdown(
-              'Doctor Availability Filter',
-              _selectedDoctor,
-              ['All', ..._doctors.map((d) => d.fullname)],
-              (v) {
-                if (v != null) {
-                  setState(() => _selectedDoctor = v);
-                  _loadData();
-                }
-              },
-            ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.04),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
           ),
-          if (_selectedDoctor != 'All') ...[
-            const SizedBox(width: 12),
-            IconButton(
-              onPressed: () {
-                setState(() => _selectedDoctor = 'All');
-                _loadData();
-              },
-              icon: const Icon(Icons.refresh, color: Colors.redAccent),
-              tooltip: 'Reset Filters',
-            ),
-          ],
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            alignment: WrapAlignment.start,
+            crossAxisAlignment: WrapCrossAlignment.end,
+            children: [
+              // 1. Doctor Filter
+              SizedBox(
+                width: isMobile ? double.infinity : 220,
+                child: _buildFilterDropdown(
+                  'Doctor Availability Filter',
+                  _selectedDoctor,
+                  ['All', ..._doctors.map((d) => d.fullname)],
+                  (v) {
+                    if (v != null) {
+                      setState(() => _selectedDoctor = v);
+                      _loadData();
+                    }
+                  },
+                ),
+              ),
+
+              // 2. Pharmacy Status Filter (Tab 7)
+              if (currentTab == 7)
+                SizedBox(
+                  width: isMobile ? double.infinity : 180,
+                  child: _buildFilterDropdown(
+                    'Pharmacy Status',
+                    _selectedPharmacyStatus,
+                    const ['All', 'Pending', 'Dispensed'],
+                    (v) {
+                      if (v != null) {
+                        setState(() => _selectedPharmacyStatus = v);
+                      }
+                    },
+                  ),
+                ),
+
+              // 3. Lab Test Filter (Tab 6)
+              if (currentTab == 6)
+                SizedBox(
+                  width: isMobile ? double.infinity : 220,
+                  child: _buildFilterDropdown(
+                    'Lab Test',
+                    _selectedLabTest,
+                    _availableLabTests,
+                    (v) {
+                      if (v != null) {
+                        setState(() => _selectedLabTest = v);
+                      }
+                    },
+                  ),
+                ),
+
+              // 4. Date Range Filter
+              if (currentTab >= 3)
+                SizedBox(
+                  width: isMobile ? double.infinity : 180,
+                  child: _buildFilterDropdown(
+                    'Date Range',
+                    _selectedDateFilter,
+                    const ['All', 'Today', 'Yesterday', 'Past 7 Days', 'Past 30 Days'],
+                    (v) {
+                      if (v != null) {
+                        setState(() => _selectedDateFilter = v);
+                      }
+                    },
+                  ),
+                ),
+
+              // 5. Action Buttons (Apply & Reset)
+              Padding(
+                padding: const EdgeInsets.only(top: 18),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    ElevatedButton.icon(
+                      onPressed: () {
+                        setState(() {});
+                        _loadData();
+                      },
+                      icon: const Icon(Icons.check, size: 16),
+                      label: const Text('Apply Filter'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppTheme.primaryColor,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                      ),
+                    ),
+                    if (_hasActiveFilters) ...[
+                      const SizedBox(width: 8),
+                      OutlinedButton.icon(
+                        onPressed: () {
+                          setState(() {
+                            _selectedDoctor = 'All';
+                            _selectedPharmacyStatus = 'All';
+                            _selectedLabTest = 'All';
+                            _selectedDateFilter = 'All';
+                          });
+                          _loadData();
+                        },
+                        icon: const Icon(Icons.refresh, size: 16, color: AppTheme.dangerColor),
+                        label: const Text('Reset', style: TextStyle(color: AppTheme.dangerColor)),
+                        style: OutlinedButton.styleFrom(
+                          side: const BorderSide(color: AppTheme.dangerColor),
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ),
         ],
       ),
     );
@@ -777,7 +970,63 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
     );
   }
 
-  int _getPrescriptionsCount() {
+  bool get _hasActiveFilters =>
+      _selectedDoctor != 'All' ||
+      _selectedPharmacyStatus != 'All' ||
+      _selectedLabTest != 'All' ||
+      _selectedDateFilter != 'All';
+
+  bool _matchesDateFilter(dynamic createdAtRaw) {
+    if (_selectedDateFilter == 'All') return true;
+    if (createdAtRaw == null) return false;
+    final dt = DateTime.tryParse(createdAtRaw.toString());
+    if (dt == null) return false;
+    final localDt = dt.toLocal();
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final itemDate = DateTime(localDt.year, localDt.month, localDt.day);
+
+    if (_selectedDateFilter == 'Today') {
+      return itemDate == today;
+    } else if (_selectedDateFilter == 'Yesterday') {
+      final yesterday = today.subtract(const Duration(days: 1));
+      return itemDate == yesterday;
+    } else if (_selectedDateFilter == 'Past 7 Days') {
+      final sevenDaysAgo = today.subtract(const Duration(days: 7));
+      return itemDate.isAfter(sevenDaysAgo.subtract(const Duration(seconds: 1))) &&
+          itemDate.isBefore(today.add(const Duration(days: 1)));
+    } else if (_selectedDateFilter == 'Past 30 Days') {
+      final thirtyDaysAgo = today.subtract(const Duration(days: 30));
+      return itemDate.isAfter(thirtyDaysAgo.subtract(const Duration(seconds: 1))) &&
+          itemDate.isBefore(today.add(const Duration(days: 1)));
+    }
+    return true;
+  }
+
+  List<String> get _availableLabTests {
+    final tests = <String>{};
+    for (final c in _consultations) {
+      final labsRaw = c['lab_tests'];
+      List<dynamic> labs = [];
+      if (labsRaw is List) {
+        labs = labsRaw;
+      } else if (labsRaw is String) {
+        try {
+          final decoded = jsonDecode(labsRaw);
+          if (decoded is List) labs = decoded;
+        } catch (_) {}
+      }
+      for (final t in labs) {
+        if (t != null && t.toString().trim().isNotEmpty) {
+          tests.add(t.toString().trim());
+        }
+      }
+    }
+    final list = tests.toList()..sort();
+    return ['All', ...list];
+  }
+
+  List<Map<String, dynamic>> _getFilteredPrescriptions() {
     return _consultations.where((c) {
       final medsRaw = c['medications'];
       List<dynamic> meds = [];
@@ -789,11 +1038,47 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
           if (decoded is List) meds = decoded;
         } catch (_) {}
       }
-      return meds.isNotEmpty;
-    }).length;
+      if (meds.isEmpty) return false;
+
+      // Search Query
+      if (_searchQuery.trim().isNotEmpty) {
+        final query = _searchQuery.trim().toLowerCase();
+        final name = (c['patient_name'] ?? '').toString().toLowerCase();
+        final pDisplayId = (c['patient_display_id'] ?? '').toString().toLowerCase();
+        final pId = (c['patient_id'] ?? '').toString().toLowerCase();
+        final phone = (c['patient_phone'] ?? '').toString().toLowerCase();
+        final doc = (c['doctor_name'] ?? '').toString().toLowerCase();
+        final matchesMeds = meds.any((m) => m.toString().toLowerCase().contains(query));
+
+        if (!name.contains(query) &&
+            !pDisplayId.contains(query) &&
+            !pId.contains(query) &&
+            !phone.contains(query) &&
+            !doc.contains(query) &&
+            !matchesMeds) {
+          return false;
+        }
+      }
+
+      // Doctor Filter
+      if (_selectedDoctor != 'All') {
+        final doc = (c['doctor_name'] ?? '').toString().trim().toLowerCase();
+        final target = _selectedDoctor.trim().toLowerCase();
+        if (doc != target && !doc.contains(target)) {
+          return false;
+        }
+      }
+
+      // Date Filter
+      if (!_matchesDateFilter(c['created_at'])) {
+        return false;
+      }
+
+      return true;
+    }).toList();
   }
 
-  int _getLabTestsCount() {
+  List<Map<String, dynamic>> _getFilteredLabOrders() {
     return _consultations.where((c) {
       final labsRaw = c['lab_tests'];
       List<dynamic> labs = [];
@@ -805,11 +1090,54 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
           if (decoded is List) labs = decoded;
         } catch (_) {}
       }
-      return labs.isNotEmpty;
-    }).length;
+      if (labs.isEmpty) return false;
+
+      // Search Query
+      if (_searchQuery.trim().isNotEmpty) {
+        final query = _searchQuery.trim().toLowerCase();
+        final name = (c['patient_name'] ?? '').toString().toLowerCase();
+        final pDisplayId = (c['patient_display_id'] ?? '').toString().toLowerCase();
+        final pId = (c['patient_id'] ?? '').toString().toLowerCase();
+        final phone = (c['patient_phone'] ?? '').toString().toLowerCase();
+        final doc = (c['doctor_name'] ?? '').toString().toLowerCase();
+        final matchesLabs = labs.any((l) => l.toString().toLowerCase().contains(query));
+
+        if (!name.contains(query) &&
+            !pDisplayId.contains(query) &&
+            !pId.contains(query) &&
+            !phone.contains(query) &&
+            !doc.contains(query) &&
+            !matchesLabs) {
+          return false;
+        }
+      }
+
+      // Doctor Filter
+      if (_selectedDoctor != 'All') {
+        final doc = (c['doctor_name'] ?? '').toString().trim().toLowerCase();
+        final target = _selectedDoctor.trim().toLowerCase();
+        if (doc != target && !doc.contains(target)) {
+          return false;
+        }
+      }
+
+      // Lab Test Type Filter
+      if (_selectedLabTest != 'All') {
+        final targetTest = _selectedLabTest.trim().toLowerCase();
+        final hasTest = labs.any((l) => l.toString().toLowerCase().contains(targetTest));
+        if (!hasTest) return false;
+      }
+
+      // Date Filter
+      if (!_matchesDateFilter(c['created_at'])) {
+        return false;
+      }
+
+      return true;
+    }).toList();
   }
 
-  int _getPharmacyCount() {
+  List<Map<String, dynamic>> _getFilteredPharmacyRecords() {
     return _consultations.where((c) {
       final status = c['pharmacy_status']?.toString();
       if (status == null || status.isEmpty) return false;
@@ -823,8 +1151,190 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
           if (decoded is List) meds = decoded;
         } catch (_) {}
       }
-      return meds.isNotEmpty;
-    }).length;
+      if (meds.isEmpty) return false;
+
+      // Search Query
+      if (_searchQuery.trim().isNotEmpty) {
+        final query = _searchQuery.trim().toLowerCase();
+        final name = (c['patient_name'] ?? '').toString().toLowerCase();
+        final pDisplayId = (c['patient_display_id'] ?? '').toString().toLowerCase();
+        final pId = (c['patient_id'] ?? '').toString().toLowerCase();
+        final phone = (c['patient_phone'] ?? '').toString().toLowerCase();
+        final doc = (c['doctor_name'] ?? '').toString().toLowerCase();
+        final matchesMeds = meds.any((m) => m.toString().toLowerCase().contains(query));
+
+        if (!name.contains(query) &&
+            !pDisplayId.contains(query) &&
+            !pId.contains(query) &&
+            !phone.contains(query) &&
+            !doc.contains(query) &&
+            !matchesMeds) {
+          return false;
+        }
+      }
+
+      // Doctor Filter
+      if (_selectedDoctor != 'All') {
+        final doc = (c['doctor_name'] ?? '').toString().trim().toLowerCase();
+        final target = _selectedDoctor.trim().toLowerCase();
+        if (doc != target && !doc.contains(target)) {
+          return false;
+        }
+      }
+
+      // Pharmacy Status Filter
+      if (_selectedPharmacyStatus != 'All') {
+        if (status.trim().toLowerCase() != _selectedPharmacyStatus.trim().toLowerCase()) {
+          return false;
+        }
+      }
+
+      // Date Filter
+      if (!_matchesDateFilter(c['created_at'])) {
+        return false;
+      }
+
+      return true;
+    }).toList();
+  }
+
+  int _getPrescriptionsCount() {
+    return _getFilteredPrescriptions().length;
+  }
+
+  int _getLabTestsCount() {
+    return _getFilteredLabOrders().length;
+  }
+
+  int _getPharmacyCount() {
+    return _getFilteredPharmacyRecords().length;
+  }
+
+  Widget _buildSessionSelector() {
+    final bool isMobile = widget.isMobile || MediaQuery.of(context).size.width < 900;
+    return Container(
+      margin: EdgeInsets.symmetric(horizontal: isMobile ? 16 : 24),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppTheme.borderColor),
+      ),
+      child: isMobile
+          ? Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.schedule, size: 14, color: AppTheme.primaryColor),
+                    const SizedBox(width: 6),
+                    const Text(
+                      'Doctor Shifts:',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: AppTheme.textPrimaryColor,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      _buildSessionChipItem('All', 'All Shifts'),
+                      const SizedBox(width: 8),
+                      _buildSessionChipItem(
+                        'Morning',
+                        '☀️ Morning (09:00 AM - 01:00 PM)',
+                      ),
+                      const SizedBox(width: 8),
+                      _buildSessionChipItem(
+                        'Evening',
+                        '🌙 Evening (04:00 PM - 08:00 PM)',
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            )
+          : Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: AppTheme.primaryColor.withOpacity(0.08),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.schedule, size: 14, color: AppTheme.primaryColor),
+                      const SizedBox(width: 6),
+                      Text(
+                        'Doctor Shifts:',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: AppTheme.primaryColor,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        _buildSessionChipItem('All', 'All Shifts'),
+                        const SizedBox(width: 8),
+                        _buildSessionChipItem(
+                          'Morning',
+                          '☀️ Morning Shift (09:00 AM - 01:00 PM)',
+                        ),
+                        const SizedBox(width: 8),
+                        _buildSessionChipItem(
+                          'Evening',
+                          '🌙 Evening Shift (04:00 PM - 08:00 PM)',
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+    );
+  }
+
+  Widget _buildSessionChipItem(String sessionKey, String label) {
+    final isSelected = _selectedSession == sessionKey;
+    return InkWell(
+      onTap: () => setState(() => _selectedSession = sessionKey),
+      borderRadius: BorderRadius.circular(20),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: isSelected ? AppTheme.primaryColor : const Color(0xFFF1F5F9),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: isSelected ? AppTheme.primaryColor : const Color(0xFFCBD5E1),
+            width: isSelected ? 1.5 : 1,
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+            color: isSelected ? Colors.white : AppTheme.textPrimaryColor,
+          ),
+        ),
+      ),
+    );
   }
 
   Widget _buildTabBar() {
@@ -968,15 +1478,19 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
   Widget _buildAppointmentItemCard(AppointmentModel app, int tabIndex) {
     final avatarColor = AppTheme.getAvatarColors(app.patientName);
     final bool isTriaged =
-        app.status == 'Checked-in' || app.status == 'Waiting';
+        app.status == 'Checked In' ||
+        app.status == 'Checked-in' ||
+        app.status == 'Waiting';
 
     // Status colors
     Color statusColor;
     switch (app.status) {
       case 'Confirmed':
+      case 'Scheduled':
         statusColor = AppTheme.primaryColor;
         break;
       case 'Waiting':
+      case 'Checked In':
       case 'Checked-in':
         statusColor = const Color(0xFF0D9488); // Teal
         break;
@@ -1058,6 +1572,26 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
                           ],
                         ),
                       ),
+                      const SizedBox(height: 4),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: _isMorningSlot(app.appointmentTime)
+                              ? const Color(0xFFFEF3C7)
+                              : const Color(0xFFEDE9FE),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          _isMorningSlot(app.appointmentTime) ? '☀️ Morning' : '🌙 Evening',
+                          style: TextStyle(
+                            fontSize: 9,
+                            fontWeight: FontWeight.bold,
+                            color: _isMorningSlot(app.appointmentTime)
+                                ? const Color(0xFFB45309)
+                                : const Color(0xFF6D28D9),
+                          ),
+                        ),
+                      ),
                       const SizedBox(height: 6),
                       CircleAvatar(
                         radius: 20,
@@ -1115,6 +1649,28 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
                                     fontSize: 10,
                                     fontWeight: FontWeight.bold,
                                     color: Colors.grey.shade700,
+                                  ),
+                                ),
+                              ),
+                            if (app.tokenNumber != null)
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 7,
+                                  vertical: 2,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: AppTheme.primaryColor.withOpacity(0.12),
+                                  borderRadius: BorderRadius.circular(4),
+                                  border: Border.all(
+                                    color: AppTheme.primaryColor.withOpacity(0.35),
+                                  ),
+                                ),
+                                child: Text(
+                                  'Token #${app.tokenNumber}',
+                                  style: const TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold,
+                                    color: AppTheme.primaryColor,
                                   ),
                                 ),
                               ),
@@ -1211,6 +1767,25 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
 
                   // Status Pill Summary
                   const SizedBox(width: 8),
+                  if (app.tokenNumber != null) ...[
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: AppTheme.primaryColor.withOpacity(0.12),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: AppTheme.primaryColor.withOpacity(0.3)),
+                      ),
+                      child: Text(
+                        'Token #${app.tokenNumber}',
+                        style: const TextStyle(
+                          color: AppTheme.primaryColor,
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                  ],
                   _buildStatusBadge(app.status),
                 ],
               ),
@@ -1218,6 +1793,8 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
 
               if (isMobile) ...[
                 if (app.bloodPressureSystolic != null ||
+                    app.pulse != null ||
+                    app.spo2 != null ||
                     app.temperature != null ||
                     app.sugarLevel != null) ...[
                   Text(
@@ -1238,6 +1815,18 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
                           Icons.speed,
                           'BP: ${app.bloodPressureSystolic}/${app.bloodPressureDiastolic ?? "--"} mmHg',
                           Colors.blue.shade700,
+                        ),
+                      if (app.pulse != null)
+                        _buildVitalPill(
+                          Icons.favorite,
+                          'Pulse: ${app.pulse} bpm',
+                          Colors.pink.shade700,
+                        ),
+                      if (app.spo2 != null)
+                        _buildVitalPill(
+                          Icons.air,
+                          'SpO2: ${app.spo2}%',
+                          Colors.teal.shade700,
                         ),
                       if (app.temperature != null)
                         _buildVitalPill(
@@ -1348,7 +1937,110 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
                           ),
                         ),
                       ],
-                      if (app.status == 'Confirmed') ...[
+                      if (app.status == 'Confirmed' || app.status == 'Scheduled') ...[
+                        ElevatedButton.icon(
+                          onPressed: () => _checkInAppointment(app),
+                          icon: const Icon(
+                            Icons.how_to_reg,
+                            size: 14,
+                            color: Colors.white,
+                          ),
+                          label: Text(
+                            context.tr('check_in', fallback: 'Check In'),
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF0F766E),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 14,
+                              vertical: 10,
+                            ),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                          ),
+                        ),
+                      ],
+                      if (Provider.of<AuthProvider>(context, listen: false).user?.role.toLowerCase() != 'nurse' &&
+                          app.status == 'Waiting') ...[
+                        ElevatedButton.icon(
+                          onPressed: () => _startConsultation(app),
+                          icon: const Icon(
+                            Icons.play_arrow_rounded,
+                            size: 16,
+                            color: Colors.white,
+                          ),
+                          label: const Text(
+                            'Start Consult',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppTheme.secondaryColor,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 14,
+                              vertical: 10,
+                            ),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                          ),
+                        ),
+                      ],
+
+                      if (Provider.of<AuthProvider>(context, listen: false).user?.role.toLowerCase() != 'nurse' &&
+                          app.status != 'Cancelled') ...[
+                        ElevatedButton.icon(
+                          onPressed: () {
+                            BillingReceiptDialog.show(
+                              context,
+                              appointmentId: app.id,
+                              onPaymentSuccess: _loadData,
+                            );
+                          },
+                          icon: Icon(
+                            (app.billingPaymentStatus == 'Paid' || app.consultationFee == 0)
+                                ? Icons.receipt_long
+                                : Icons.payment,
+                            size: 15,
+                            color: Colors.white,
+                          ),
+                          label: Text(
+                            (app.billingPaymentStatus == 'Paid' || app.consultationFee == 0)
+                                ? 'Receipt'
+                                : 'Collect Fee',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: (app.billingPaymentStatus == 'Paid' || app.consultationFee == 0)
+                                ? const Color(0xFF16A34A)
+                                : const Color(0xFFD97706),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 14,
+                              vertical: 10,
+                            ),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                          ),
+                        ),
+                      ],
+
+                      if (app.status == 'Confirmed' ||
+                          app.status == 'Scheduled' ||
+                          app.status == 'Checked In' ||
+                          app.status == 'Checked-in') ...[
                         if (!_hasVitals(app))
                           ElevatedButton.icon(
                             onPressed: () => _openVitalsDialog(app),
@@ -1432,6 +2124,18 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
                                     Icons.speed,
                                     'BP: ${app.bloodPressureSystolic}/${app.bloodPressureDiastolic ?? "--"} mmHg',
                                     Colors.blue.shade700,
+                                  ),
+                                if (app.pulse != null)
+                                  _buildVitalPill(
+                                    Icons.favorite,
+                                    'Pulse: ${app.pulse} bpm',
+                                    Colors.pink.shade700,
+                                  ),
+                                if (app.spo2 != null)
+                                  _buildVitalPill(
+                                    Icons.air,
+                                    'SpO2: ${app.spo2}%',
+                                    Colors.teal.shade700,
                                   ),
                                 if (app.temperature != null)
                                   _buildVitalPill(
@@ -1544,7 +2248,68 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
                             ),
                           ),
                         ],
-                        if (app.status == 'Confirmed') ...[
+                        if (app.status == 'Confirmed' || app.status == 'Scheduled') ...[
+                          ElevatedButton.icon(
+                            onPressed: () => _checkInAppointment(app),
+                            icon: const Icon(
+                              Icons.how_to_reg,
+                              size: 14,
+                              color: Colors.white,
+                            ),
+                            label: Text(
+                              context.tr('check_in', fallback: 'Check In'),
+                              style: const TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF0F766E),
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 14,
+                                vertical: 10,
+                              ),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                            ),
+                          ),
+                        ],
+                        if (Provider.of<AuthProvider>(context, listen: false).user?.role.toLowerCase() != 'nurse' &&
+                            app.status == 'Waiting') ...[
+                          ElevatedButton.icon(
+                            onPressed: () => _startConsultation(app),
+                            icon: const Icon(
+                              Icons.play_arrow_rounded,
+                              size: 16,
+                              color: Colors.white,
+                            ),
+                            label: const Text(
+                              'Start Consult',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppTheme.secondaryColor,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 14,
+                                vertical: 10,
+                              ),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                            ),
+                          ),
+                        ],
+
+                        if (app.status == 'Confirmed' ||
+                            app.status == 'Scheduled' ||
+                            app.status == 'Checked In' ||
+                            app.status == 'Checked-in') ...[
                           if (!_hasVitals(app))
                             ElevatedButton.icon(
                               onPressed: () => _openVitalsDialog(app),
@@ -1894,21 +2659,17 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
       if (!isAvailable) return [];
       final allSlots = _generateSlotsForDoctor(doctor);
       final now = DateTime.now();
-      final bool isToday = date.year == now.year && date.month == now.month && date.day == now.day;
+      final todayDate = DateTime(now.year, now.month, now.day);
+      final checkDate = DateTime(date.year, date.month, date.day);
+      if (checkDate.isBefore(todayDate)) return [];
+      final bool isToday = checkDate.isAtSameMomentAs(todayDate);
       if (!isToday) return allSlots;
-
-      int duration = 30;
-      if (doctor.slotDuration != null && doctor.slotDuration!.trim().isNotEmpty) {
-        final digits = RegExp(r'\d+').firstMatch(doctor.slotDuration!)?.group(0);
-        if (digits != null) duration = int.tryParse(digits) ?? 30;
-      }
-      if (duration <= 0) duration = 30;
 
       return allSlots.where((slot) {
         try {
           final slotDt = _parseTime(slot);
-          final slotEnd = DateTime(now.year, now.month, now.day, slotDt.hour, slotDt.minute).add(Duration(minutes: duration));
-          if (slotEnd.isBefore(now)) return false;
+          final slotStart = DateTime(now.year, now.month, now.day, slotDt.hour, slotDt.minute);
+          if (slotStart.isBefore(now)) return false;
         } catch (_) {}
         return true;
       }).toList();
@@ -1922,6 +2683,18 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
           });
         }
       });
+    }
+
+    final initialDoctor = selectedDoctor;
+    final initialDate = newDate;
+    final initialTime = newTime;
+    final initialReason = reasonCtrl.text.trim();
+
+    bool isDirty() {
+      return selectedDoctor != initialDoctor ||
+          newDate != initialDate ||
+          newTime != initialTime ||
+          reasonCtrl.text.trim() != initialReason;
     }
 
     showDialog(
@@ -1956,7 +2729,13 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
           final eligibleDoctors = getEligibleDoctors();
           final availableSlots = getFilteredSlots(newDate, selectedDoctor);
 
-          return AlertDialog(
+          return PopScope(
+            canPop: false,
+            onPopInvokedWithResult: (bool didPop, dynamic result) async {
+              if (didPop) return;
+              DiscardDialogHelper.handleCancelOrDismiss(ctx, isDirty: isDirty());
+            },
+            child: AlertDialog(
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(16),
             ),
@@ -2431,7 +3210,7 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
             ),
             actions: [
               OutlinedButton(
-                onPressed: isSaving ? null : () => Navigator.pop(ctx),
+                onPressed: isSaving ? null : () => DiscardDialogHelper.handleCancelOrDismiss(ctx, isDirty: isDirty()),
                 style: AppTheme.cancelButton,
                 child: const Text('Cancel'),
               ),
@@ -2559,6 +3338,7 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
                       ),
               ),
             ],
+          ),
           );
         },
       ),
@@ -2626,6 +3406,61 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
       await _showVitalsMissingDialog(context, app);
     } else {
       await _markWaiting(app);
+    }
+  }
+
+  Future<void> _checkInAppointment(AppointmentModel app) async {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final apptDt = DateFormatter.toDateTime(app.appointmentDate);
+
+    if (apptDt != null) {
+      final apptDay = DateTime(apptDt.year, apptDt.month, apptDt.day);
+      if (apptDay.isAfter(today)) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Cannot check in before the appointment date.'),
+              backgroundColor: AppTheme.dangerColor,
+            ),
+          );
+        }
+        return;
+      }
+    }
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => CheckInVitalsDialog(
+        appointment: app,
+        onCompleted: _loadData,
+      ),
+    );
+  }
+
+  Future<void> _startConsultation(AppointmentModel app) async {
+    final userRole = Provider.of<AuthProvider>(context, listen: false).user?.role ?? '';
+    if (userRole.toLowerCase() == 'nurse') return;
+    try {
+      await _appointmentController.updateStatus(app.id!, 'In Consultation');
+      _loadData();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('${app.patientName} moved to In Consultation ✓'),
+            backgroundColor: AppTheme.secondaryColor,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to update status: $e'),
+            backgroundColor: AppTheme.dangerColor,
+          ),
+        );
+      }
     }
   }
 
@@ -2788,7 +3623,7 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
           ),
           ElevatedButton(
             onPressed: () async {
-              if (!formKey.currentState!.validate()) {
+              if (!formKey.validateAndScroll()) {
                 return;
               }
 
@@ -3695,43 +4530,11 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
             'Attached Documents:',
             style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
           ),
-          const SizedBox(height: 4),
-          ...docsList.map((d) {
-            if (d is Map) {
-              return Container(
-                margin: const EdgeInsets.only(bottom: 4),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 6,
-                ),
-                decoration: BoxDecoration(
-                  color: Colors.grey.shade50,
-                  border: Border.all(color: Colors.grey.shade200),
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: Row(
-                  children: [
-                    const Icon(
-                      Icons.picture_as_pdf,
-                      size: 14,
-                      color: Colors.red,
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        '${d['title']} (${d['file_name']})',
-                        style: const TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              );
-            }
-            return const SizedBox.shrink();
-          }).toList(),
+          const SizedBox(height: 6),
+          ConsultationDocumentsView(
+            documents: docsList,
+            isCompact: true,
+          ),
           const SizedBox(height: 8),
         ],
         if (medsList.isNotEmpty) ...[
@@ -4025,11 +4828,23 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
       'No-Show',
     ];
 
+    final initialStatus = app.status;
+
+    bool isDirty() {
+      return newStatus != initialStatus || reasonController.text.trim().isNotEmpty;
+    }
+
     showDialog(
       context: context,
       barrierDismissible: false,
       builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDialogState) => AlertDialog(
+        builder: (ctx, setDialogState) => PopScope(
+          canPop: false,
+          onPopInvokedWithResult: (bool didPop, dynamic result) async {
+            if (didPop) return;
+            DiscardDialogHelper.handleCancelOrDismiss(ctx, isDirty: isDirty());
+          },
+          child: AlertDialog(
           title: const Text(
             'Admin Status Override',
             style: TextStyle(fontWeight: FontWeight.bold),
@@ -4081,7 +4896,7 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
           ),
           actions: [
             OutlinedButton(
-              onPressed: isSaving ? null : () => Navigator.pop(ctx),
+              onPressed: isSaving ? null : () => DiscardDialogHelper.handleCancelOrDismiss(ctx, isDirty: isDirty()),
               style: AppTheme.cancelButton,
               child: const Text('Cancel'),
             ),
@@ -4151,6 +4966,7 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
                   : const Text('Confirm'),
             ),
           ],
+        ),
         ),
       ),
     );
@@ -4310,6 +5126,17 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
     final complaintCtrl = TextEditingController();
     final formKey = GlobalKey<FormState>();
 
+    bool isDirty() {
+      return selectedPatient != null ||
+          selectedDoctor != null ||
+          selectedTime != null ||
+          bpSysCtrl.text.trim().isNotEmpty ||
+          bpDiaCtrl.text.trim().isNotEmpty ||
+          sugarCtrl.text.trim().isNotEmpty ||
+          tempCtrl.text.trim().isNotEmpty ||
+          complaintCtrl.text.trim().isNotEmpty;
+    }
+
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -4332,7 +5159,13 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
                 });
           }
 
-          return AlertDialog(
+          return PopScope(
+            canPop: false,
+            onPopInvokedWithResult: (bool didPop, dynamic result) async {
+              if (didPop) return;
+              DiscardDialogHelper.handleCancelOrDismiss(ctx, isDirty: isDirty());
+            },
+            child: AlertDialog(
             title: const Text(
               'Quick Walk-in Entry',
               style: TextStyle(fontWeight: FontWeight.bold),
@@ -4468,8 +5301,8 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
                                 availableSlots = availableSlots.where((slot) {
                                   try {
                                     final slotDt = _parseTime(slot);
-                                    final slotEnd = DateTime(now.year, now.month, now.day, slotDt.hour, slotDt.minute).add(Duration(minutes: duration));
-                                    if (slotEnd.isBefore(now)) return false;
+                                    final slotStart = DateTime(now.year, now.month, now.day, slotDt.hour, slotDt.minute);
+                                    if (slotStart.isBefore(now)) return false;
                                   } catch (_) {}
 
                                   bool isBooked = _appointments.any(
@@ -4822,7 +5655,7 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
             ),
             actions: [
               OutlinedButton(
-                onPressed: isSaving ? null : () => Navigator.pop(ctx),
+                onPressed: isSaving ? null : () => DiscardDialogHelper.handleCancelOrDismiss(ctx, isDirty: isDirty()),
                 style: AppTheme.cancelButton,
                 child: const Text('Cancel'),
               ),
@@ -4830,7 +5663,7 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
                 onPressed: isSaving
                     ? null
                     : () async {
-                        if (!formKey.currentState!.validate()) return;
+                        if (!formKey.validateAndScroll()) return;
                         if (selectedTime == null) {
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(
@@ -4928,6 +5761,7 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
                     : const Text('Register'),
               ),
             ],
+          ),
           );
         },
       ),
@@ -6138,25 +6972,23 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
   }
 
   Widget _buildPrescriptionsTab() {
-    final prescriptions = _consultations.where((c) {
-      final medsRaw = c['medications'];
-      List<dynamic> meds = [];
-      if (medsRaw is List) {
-        meds = medsRaw;
-      } else if (medsRaw is String) {
-        try {
-          final decoded = jsonDecode(medsRaw);
-          if (decoded is List) meds = decoded;
-        } catch (_) {}
-      }
-      return meds.isNotEmpty;
-    }).toList();
+    final prescriptions = _getFilteredPrescriptions();
 
     if (prescriptions.isEmpty) {
-      return const Center(
-        child: Text(
-          'No prescriptions generated today.',
-          style: TextStyle(color: Colors.grey),
+      final isFiltered = _searchQuery.isNotEmpty || _hasActiveFilters;
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.description_outlined, size: 48, color: Colors.grey.shade400),
+            const SizedBox(height: 12),
+            Text(
+              isFiltered
+                  ? 'No prescriptions found matching the search or filter criteria.'
+                  : 'No prescriptions available.',
+              style: const TextStyle(color: Colors.grey, fontSize: 14),
+            ),
+          ],
         ),
       );
     }
@@ -6188,12 +7020,40 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text(
-                      c['patient_name'] ?? 'Unknown Patient',
-                      style: const TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 14,
-                      ),
+                    Row(
+                      children: [
+                        Text(
+                          c['patient_name'] ?? 'Unknown Patient',
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 14,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFEFF6FF),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: const Color(0xFF93C5FD)),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.bolt, size: 12, color: AppTheme.primaryColor),
+                              SizedBox(width: 3),
+                              Text(
+                                'CPOE Dispatched',
+                                style: TextStyle(
+                                  fontSize: 10.5,
+                                  fontWeight: FontWeight.bold,
+                                  color: AppTheme.primaryColor,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                     ),
                     Text(
                       DateFormat('dd/MM/yyyy').format(
@@ -6259,25 +7119,23 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
   }
 
   Widget _buildLabTestsTab() {
-    final labOrders = _consultations.where((c) {
-      final labsRaw = c['lab_tests'];
-      List<dynamic> labs = [];
-      if (labsRaw is List) {
-        labs = labsRaw;
-      } else if (labsRaw is String) {
-        try {
-          final decoded = jsonDecode(labsRaw);
-          if (decoded is List) labs = decoded;
-        } catch (_) {}
-      }
-      return labs.isNotEmpty;
-    }).toList();
+    final labOrders = _getFilteredLabOrders();
 
     if (labOrders.isEmpty) {
-      return const Center(
-        child: Text(
-          'No lab tests ordered today.',
-          style: TextStyle(color: Colors.grey),
+      final isFiltered = _searchQuery.isNotEmpty || _hasActiveFilters;
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.science_outlined, size: 48, color: Colors.grey.shade400),
+            const SizedBox(height: 12),
+            Text(
+              isFiltered
+                  ? 'No lab orders found matching the search or filter criteria.'
+                  : 'No lab orders available.',
+              style: const TextStyle(color: Colors.grey, fontSize: 14),
+            ),
+          ],
         ),
       );
     }
@@ -6309,12 +7167,40 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text(
-                      c['patient_name'] ?? 'Unknown Patient',
-                      style: const TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 14,
-                      ),
+                    Row(
+                      children: [
+                        Text(
+                          c['patient_name'] ?? 'Unknown Patient',
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 14,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF0FDFA),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: const Color(0xFF5EEAD4)),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.science, size: 12, color: Color(0xFF0D9488)),
+                              SizedBox(width: 3),
+                              Text(
+                                'Sample Worklist',
+                                style: TextStyle(
+                                  fontSize: 10.5,
+                                  fontWeight: FontWeight.bold,
+                                  color: Color(0xFF0D9488),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                     ),
                     Text(
                       DateFormat('dd/MM/yyyy').format(
@@ -6333,39 +7219,96 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
                 ),
                 const Divider(height: 24),
                 const Text(
-                  'Ordered Tests:',
+                  'Ordered Tests — Phlebotomy & Sample Worklist:',
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
                 ),
                 const SizedBox(height: 8),
-                Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
+                Column(
                   children: labs.map<Widget>((l) {
+                    final testName = l.toString();
+                    final sampleKey = '${c["id"]}_$testName';
+                    final isCollected = _collectedSampleKeys.contains(sampleKey);
                     return Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 4,
-                      ),
+                      margin: const EdgeInsets.only(bottom: 8),
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                       decoration: BoxDecoration(
-                        color: Colors.blue.shade50,
-                        border: Border.all(color: Colors.blue.shade100),
-                        borderRadius: BorderRadius.circular(16),
+                        color: isCollected ? const Color(0xFFF0FDF4) : const Color(0xFFF8FAFC),
+                        border: Border.all(
+                          color: isCollected ? AppTheme.secondaryColor.withOpacity(0.4) : const Color(0xFFE2E8F0),
+                        ),
+                        borderRadius: BorderRadius.circular(8),
                       ),
                       child: Row(
-                        mainAxisSize: MainAxisSize.min,
                         children: [
                           Icon(
                             Icons.science_outlined,
-                            size: 12,
-                            color: Colors.blue.shade800,
+                            size: 16,
+                            color: isCollected ? AppTheme.secondaryColor : AppTheme.primaryColor,
                           ),
-                          const SizedBox(width: 4),
-                          Text(
-                            l.toString(),
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.blue.shade800,
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  testName,
+                                  style: const TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: AppTheme.textPrimaryColor,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  isCollected ? 'Sample Collected • Ready for Lab Analyzer' : 'Sample Collection Pending',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w500,
+                                    color: isCollected ? AppTheme.secondaryColor : const Color(0xFFD97706),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: () {
+                              setState(() {
+                                if (isCollected) {
+                                  _collectedSampleKeys.remove(sampleKey);
+                                } else {
+                                  _collectedSampleKeys.add(sampleKey);
+                                }
+                              });
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    isCollected
+                                        ? 'Sample marked pending for $testName'
+                                        : 'Sample collected for $testName (Patient: ${c["patient_name"]}) and logged in Lab Worklist!',
+                                  ),
+                                  backgroundColor: isCollected ? AppTheme.textSecondaryColor : AppTheme.secondaryColor,
+                                  duration: const Duration(seconds: 2),
+                                ),
+                              );
+                            },
+                            icon: Icon(
+                              isCollected ? Icons.check : Icons.colorize,
+                              size: 13,
+                              color: isCollected ? AppTheme.secondaryColor : AppTheme.primaryColor,
+                            ),
+                            label: Text(
+                              isCollected ? 'Collected' : 'Collect Sample',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                                color: isCollected ? AppTheme.secondaryColor : AppTheme.primaryColor,
+                              ),
+                            ),
+                            style: OutlinedButton.styleFrom(
+                              side: BorderSide(
+                                color: isCollected ? AppTheme.secondaryColor : AppTheme.primaryColor,
+                              ),
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                             ),
                           ),
                         ],
@@ -6382,27 +7325,23 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
   }
 
   Widget _buildPharmacyTab() {
-    final pharmacyNotifications = _consultations.where((c) {
-      final status = c['pharmacy_status']?.toString();
-      if (status == null || status.isEmpty) return false;
-      final medsRaw = c['medications'];
-      List<dynamic> meds = [];
-      if (medsRaw is List) {
-        meds = medsRaw;
-      } else if (medsRaw is String) {
-        try {
-          final decoded = jsonDecode(medsRaw);
-          if (decoded is List) meds = decoded;
-        } catch (_) {}
-      }
-      return meds.isNotEmpty;
-    }).toList();
+    final pharmacyNotifications = _getFilteredPharmacyRecords();
 
     if (pharmacyNotifications.isEmpty) {
-      return const Center(
-        child: Text(
-          'No pharmacy notifications today.',
-          style: TextStyle(color: Colors.grey),
+      final isFiltered = _searchQuery.isNotEmpty || _hasActiveFilters;
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.local_pharmacy_outlined, size: 48, color: Colors.grey.shade400),
+            const SizedBox(height: 12),
+            Text(
+              isFiltered
+                  ? 'No pharmacy records found matching the search or filter criteria.'
+                  : 'No pharmacy records available.',
+              style: const TextStyle(color: Colors.grey, fontSize: 14),
+            ),
+          ],
         ),
       );
     }
@@ -6437,12 +7376,40 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text(
-                      c['patient_name'] ?? 'Unknown Patient',
-                      style: const TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 14,
-                      ),
+                    Row(
+                      children: [
+                        Text(
+                          c['patient_name'] ?? 'Unknown Patient',
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 14,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFFAF5FF),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: const Color(0xFFD8B4FE)),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.bolt, size: 12, color: Colors.purple),
+                              SizedBox(width: 3),
+                              Text(
+                                'CPOE Queue',
+                                style: TextStyle(
+                                  fontSize: 10.5,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.purple,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                     ),
                     _buildPharmacyStatusBadge(status),
                   ],
@@ -6498,39 +7465,84 @@ class _OPDManagementScreenState extends State<OPDManagementScreen>
                     mainAxisAlignment: MainAxisAlignment.end,
                     children: [
                       ElevatedButton.icon(
-                        onPressed: () async {
-                          try {
-                            await _appointmentController
-                                .updateConsultation(c['id'], {
-                                  'symptoms': c['symptoms'],
-                                  'diagnosis': c['diagnosis'],
-                                  'medications': c['medications'],
-                                  'notes': c['notes'],
-                                  'lab_tests': c['lab_tests'],
-                                  'pharmacy_status': 'Dispensed',
+                        onPressed: _dispensingIds.contains(c['id'])
+                            ? null
+                            : () async {
+                                final messenger = ScaffoldMessenger.of(this.context);
+                                final cId = c['id'] is int
+                                    ? c['id'] as int
+                                    : int.tryParse(c['id']?.toString() ?? '') ?? 0;
+                                if (cId == 0) {
+                                  messenger.showSnackBar(
+                                    const SnackBar(
+                                      content: Text('Invalid consultation ID'),
+                                      backgroundColor: AppTheme.dangerColor,
+                                    ),
+                                  );
+                                  return;
+                                }
+
+                                setState(() {
+                                  _dispensingIds.add(c['id']);
                                 });
-                            _loadData();
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text(
-                                  'Medications dispensed successfully!',
+
+                                try {
+                                  await _appointmentController.updateConsultation(cId, {
+                                    'symptoms': c['symptoms'],
+                                    'diagnosis': c['diagnosis'],
+                                    'medications': c['medications'],
+                                    'notes': c['notes'],
+                                    'lab_tests': c['lab_tests'],
+                                    'pharmacy_status': 'Dispensed',
+                                  });
+                                  if (mounted) {
+                                    setState(() {
+                                      c['pharmacy_status'] = 'Dispensed';
+                                    });
+                                  }
+                                  await _loadData(showLoading: false);
+                                  if (mounted) {
+                                    messenger.showSnackBar(
+                                      const SnackBar(
+                                        content: Text(
+                                          'Medications dispensed successfully!',
+                                        ),
+                                        backgroundColor: Colors.green,
+                                      ),
+                                    );
+                                  }
+                                } catch (e) {
+                                  if (mounted) {
+                                    messenger.showSnackBar(
+                                      SnackBar(
+                                        content: Text('Error dispensing: $e'),
+                                        backgroundColor: AppTheme.dangerColor,
+                                      ),
+                                    );
+                                  }
+                                } finally {
+                                  if (mounted) {
+                                    setState(() {
+                                      _dispensingIds.remove(c['id']);
+                                    });
+                                  }
+                                }
+                              },
+                        icon: _dispensingIds.contains(c['id'])
+                            ? const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.white,
                                 ),
-                                backgroundColor: Colors.green,
-                              ),
-                            );
-                          } catch (e) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text('Error dispensing: $e'),
-                                backgroundColor: Colors.red,
-                              ),
-                            );
-                          }
-                        },
-                        icon: const Icon(Icons.check, size: 16),
-                        label: const Text('Dispense Medications'),
+                              )
+                            : const Icon(Icons.check, size: 16),
+                        label: Text(
+                          _dispensingIds.contains(c['id']) ? 'Dispensing...' : 'Dispense Medications',
+                        ),
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF0F5A8E),
+                          backgroundColor: AppTheme.primaryColor,
                           foregroundColor: Colors.white,
                           padding: const EdgeInsets.symmetric(
                             horizontal: 16,

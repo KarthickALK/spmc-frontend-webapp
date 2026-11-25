@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
 import '../services/api_service.dart';
 
 import '../config/api_config.dart';
@@ -70,6 +69,27 @@ class IpdController {
         return Map<String, dynamic>.from(body['data'] ?? {});
       } else {
         throw Exception(body['message'] ?? 'Failed to update bed');
+      }
+    } catch (e) {
+      throw Exception(e.toString().replaceAll('Exception: ', ''));
+    }
+  }
+
+  /// Quick update bed status (Available, Occupied, Reserved, Cleaning, Maintenance)
+  Future<Map<String, dynamic>> updateBedStatus({
+    required int id,
+    required String status,
+  }) async {
+    try {
+      final response = await ApiService.patch(
+        '$baseUrl/ipd/beds/$id/status',
+        {'status': status},
+      );
+      final body = jsonDecode(response.body);
+      if (response.statusCode == 200 && body['success'] == true) {
+        return Map<String, dynamic>.from(body['data'] ?? {});
+      } else {
+        throw Exception(body['message'] ?? 'Failed to update bed status');
       }
     } catch (e) {
       throw Exception(e.toString().replaceAll('Exception: ', ''));
@@ -247,6 +267,8 @@ class IpdController {
     String? finalDiagnosis,
     String? treatmentSummary,
     String? medicationPlan,
+    String? dischargeInstructions,
+    String? followUpDate,
   }) async {
     try {
       final Map<String, dynamic> body = {};
@@ -257,6 +279,12 @@ class IpdController {
         }
         if (medicationPlan != null && medicationPlan.isNotEmpty) {
           body['medication_plan'] = medicationPlan;
+        }
+        if (dischargeInstructions != null && dischargeInstructions.isNotEmpty) {
+          body['discharge_instructions'] = dischargeInstructions;
+        }
+        if (followUpDate != null && followUpDate.isNotEmpty) {
+          body['follow_up_date'] = followUpDate;
         }
       } else {
         body['discharge_summary'] = dischargeSummary;
@@ -390,13 +418,50 @@ class IpdController {
     }
   }
 
-  /// Resolve ICU alert
-  Future<void> resolveIcuAlert(int alertId) async {
+  /// Acknowledge ICU / Critical alert
+  Future<Map<String, dynamic>> acknowledgeIcuAlert(int alertId, {String? acknowledgedBy, String? notes}) async {
     try {
-      final response = await ApiService.post('$baseUrl/ipd/icu-alerts/$alertId/resolve', {});
+      final response = await ApiService.post('$baseUrl/ipd/icu-alerts/$alertId/acknowledge', {
+        if (acknowledgedBy != null) 'acknowledged_by': acknowledgedBy,
+        if (notes != null) 'notes': notes,
+      });
       final body = jsonDecode(response.body);
-      if (response.statusCode != 200) {
-        throw Exception(body['message'] ?? 'Failed to resolve alert');
+      if (response.statusCode == 200 && body['success'] == true) {
+        return Map<String, dynamic>.from(body['data'] ?? {});
+      }
+      throw Exception(body['message'] ?? 'Failed to acknowledge alert');
+    } catch (e) {
+      throw Exception(e.toString().replaceAll('Exception: ', ''));
+    }
+  }
+
+  /// Resolve ICU / Critical alert
+  Future<Map<String, dynamic>> resolveIcuAlert(int alertId, {String? resolvedBy, String? notes}) async {
+    try {
+      final response = await ApiService.post('$baseUrl/ipd/icu-alerts/$alertId/resolve', {
+        if (resolvedBy != null) 'resolved_by': resolvedBy,
+        if (notes != null) 'notes': notes,
+      });
+      final body = jsonDecode(response.body);
+      if (response.statusCode == 200 && body['success'] == true) {
+        return Map<String, dynamic>.from(body['data'] ?? {});
+      }
+      throw Exception(body['message'] ?? 'Failed to resolve alert');
+    } catch (e) {
+      throw Exception(e.toString().replaceAll('Exception: ', ''));
+    }
+  }
+
+  /// Fetch ICU / Critical alert history (active, acknowledged, resolved)
+  Future<List<Map<String, dynamic>>> fetchIcuAlertHistory() async {
+    try {
+      final response = await ApiService.get('$baseUrl/ipd/icu/alerts/history');
+      final body = jsonDecode(response.body);
+      if (response.statusCode == 200 && body['success'] == true) {
+        final List data = body['data'] ?? [];
+        return data.map((e) => Map<String, dynamic>.from(e)).toList();
+      } else {
+        throw Exception(body['message'] ?? 'Failed to fetch ICU alert history');
       }
     } catch (e) {
       throw Exception(e.toString().replaceAll('Exception: ', ''));
@@ -518,4 +583,75 @@ class IpdController {
       throw Exception(e.toString().replaceAll('Exception: ', ''));
     }
   }
+
+  /// Fetch fluid balance records and 24h summary
+  Future<Map<String, dynamic>> fetchFluidBalance(int admissionId, {String? date}) async {
+    try {
+      final queryParam = date != null ? '?date=$date' : '';
+      final response = await ApiService.get('$baseUrl/ipd/admissions/$admissionId/fluid-balance$queryParam');
+      final body = jsonDecode(response.body);
+      if (response.statusCode == 200 && body['success'] == true) {
+        return Map<String, dynamic>.from(body['data'] ?? {});
+      } else {
+        throw Exception(body['message'] ?? 'Failed to fetch fluid balance records');
+      }
+    } catch (e) {
+      throw Exception(e.toString().replaceAll('Exception: ', ''));
+    }
+  }
+
+  /// Create fluid intake or output entry
+  Future<void> createFluidLog(int admissionId, Map<String, dynamic> data) async {
+    try {
+      final response = await ApiService.post('$baseUrl/ipd/admissions/$admissionId/fluid-balance', data);
+      final body = jsonDecode(response.body);
+      if (response.statusCode != 201) {
+        throw Exception(body['message'] ?? 'Failed to record fluid intake/output');
+      }
+    } catch (e) {
+      throw Exception(e.toString().replaceAll('Exception: ', ''));
+    }
+  }
+
+  /// Delete a fluid log entry
+  Future<void> deleteFluidLog(int id) async {
+    try {
+      final response = await ApiService.delete('$baseUrl/ipd/fluid-balance/$id');
+      final body = jsonDecode(response.body);
+      if (response.statusCode != 200) {
+        throw Exception(body['message'] ?? 'Failed to delete fluid record');
+      }
+    } catch (e) {
+      throw Exception(e.toString().replaceAll('Exception: ', ''));
+    }
+  }
+
+  /// Record daily doctor round with structured SOAP notes
+  Future<void> createSoapRound(int admissionId, Map<String, dynamic> data) async {
+    try {
+      final response = await ApiService.post('$baseUrl/ipd/admissions/$admissionId/progress-notes', data);
+      final body = jsonDecode(response.body);
+      if (response.statusCode != 201) {
+        throw Exception(body['message'] ?? 'Failed to record doctor round');
+      }
+    } catch (e) {
+      throw Exception(e.toString().replaceAll('Exception: ', ''));
+    }
+  }
+
+  /// Fetch aggregated discharge summary data (admission, clinical, investigations, procedures, medications)
+  Future<Map<String, dynamic>> fetchDischargeSummaryData(int admissionId) async {
+    try {
+      final response = await ApiService.get('$baseUrl/ipd/admissions/$admissionId/discharge-summary-data');
+      final body = jsonDecode(response.body);
+      if (response.statusCode == 200 && body['success'] == true) {
+        return Map<String, dynamic>.from(body['data'] ?? {});
+      } else {
+        throw Exception(body['message'] ?? 'Failed to fetch discharge summary data');
+      }
+    } catch (e) {
+      throw Exception(e.toString().replaceAll('Exception: ', ''));
+    }
+  }
 }
+

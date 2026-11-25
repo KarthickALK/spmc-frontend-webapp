@@ -15,11 +15,16 @@ class AdminController {
     required String role,
     String? medicalLicense,
     int? specializationId,
+    int? departmentId,
     String? qualification,
     String? experience,
     int? patientsAttended,
     String? bio,
     List<String>? availableDays,
+    String? morningStartTime,
+    String? morningEndTime,
+    String? eveningStartTime,
+    String? eveningEndTime,
     String? slotStartTime,
     String? slotEndTime,
     String? slotDuration,
@@ -40,12 +45,17 @@ class AdminController {
           "password": password,
           "role": role,
           "medical_license": medicalLicense,
-          "specialization_id": specializationId,
+          "specialization_id": specializationId ?? departmentId,
+          "department_id": departmentId ?? specializationId,
           "qualification": qualification,
           "experience": experience,
           "patients_attended": patientsAttended,
           "bio": bio,
           "available_days": availableDays,
+          "morning_start_time": morningStartTime,
+          "morning_end_time": morningEndTime,
+          "evening_start_time": eveningStartTime,
+          "evening_end_time": eveningEndTime,
           "slot_start_time": slotStartTime,
           "slot_end_time": slotEndTime,
           "slot_duration": slotDuration,
@@ -131,11 +141,16 @@ class AdminController {
     String? status,
     String? medicalLicense,
     int? specializationId,
+    int? departmentId,
     String? qualification,
     String? experience,
     int? patientsAttended,
     String? bio,
     List<String>? availableDays,
+    String? morningStartTime,
+    String? morningEndTime,
+    String? eveningStartTime,
+    String? eveningEndTime,
     String? slotStartTime,
     String? slotEndTime,
     String? slotDuration,
@@ -156,12 +171,17 @@ class AdminController {
           'role': role,
           'status': status,
           'medical_license': medicalLicense,
-          'specialization_id': specializationId,
+          'specialization_id': specializationId ?? departmentId,
+          'department_id': departmentId ?? specializationId,
           'qualification': qualification,
           'experience': experience,
           'patients_attended': patientsAttended,
           'bio': bio,
           'available_days': availableDays,
+          'morning_start_time': morningStartTime,
+          'morning_end_time': morningEndTime,
+          'evening_start_time': eveningStartTime,
+          'evening_end_time': eveningEndTime,
           'slot_start_time': slotStartTime,
           'slot_end_time': slotEndTime,
           'slot_duration': slotDuration,
@@ -197,6 +217,22 @@ class AdminController {
       }
     } catch (e) {
       throw Exception(e.toString().replaceAll('Exception: ', ''));
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> fetchDepartments({bool includeInactive = false}) async {
+    try {
+      final url = includeInactive ? '$baseUrl/departments?include_inactive=true' : '$baseUrl/departments';
+      final response = await ApiService.get(url);
+      final body = jsonDecode(response.body);
+
+      if (response.statusCode == 200 && body['success'] == true) {
+        return List<Map<String, dynamic>>.from(body['data'] ?? []);
+      } else {
+        return fetchSpecializations();
+      }
+    } catch (_) {
+      return fetchSpecializations();
     }
   }
 
@@ -266,6 +302,20 @@ class AdminController {
       final body = jsonDecode(response.body);
       if (response.statusCode != 200 || body['success'] != true) {
         throw Exception(body['message'] ?? 'Failed to delete role');
+      }
+    } catch (e) {
+      throw Exception(e.toString().replaceAll('Exception: ', ''));
+    }
+  }
+
+  Future<void> updateUserRole(int userId, int? roleId) async {
+    try {
+      final response = await ApiService.put('$baseUrl/admin/rbac/users/$userId/role', {
+        'role_id': roleId,
+      });
+      final body = jsonDecode(response.body);
+      if (response.statusCode != 200 || body['success'] != true) {
+        throw Exception(body['message'] ?? 'Failed to update user role');
       }
     } catch (e) {
       throw Exception(e.toString().replaceAll('Exception: ', ''));

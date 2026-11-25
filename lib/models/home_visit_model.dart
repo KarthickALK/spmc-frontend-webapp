@@ -322,6 +322,7 @@ class HomeVisitModel {
   final Map<String, dynamic>? invoice;
   final Map<String, dynamic>? sessionStartTimes;
   final bool? hasStartedTodayBackend;
+  final double? consultationFee;
 
   HomeVisitModel({
     required this.id,
@@ -359,6 +360,7 @@ class HomeVisitModel {
     this.invoice,
     this.sessionStartTimes,
     this.hasStartedTodayBackend,
+    this.consultationFee,
   });
 
   HomeVisitModel copyWith({
@@ -397,6 +399,7 @@ class HomeVisitModel {
     Map<String, dynamic>? invoice,
     Map<String, dynamic>? sessionStartTimes,
     bool? hasStartedTodayBackend,
+    double? consultationFee,
   }) {
     return HomeVisitModel(
       id: id ?? this.id,
@@ -434,8 +437,11 @@ class HomeVisitModel {
       invoice: invoice ?? this.invoice,
       sessionStartTimes: sessionStartTimes ?? this.sessionStartTimes,
       hasStartedTodayBackend: hasStartedTodayBackend ?? this.hasStartedTodayBackend,
+      consultationFee: consultationFee ?? this.consultationFee,
     );
   }
+
+  String? get phone => patientPhone;
 
   String get formattedScheduledDate {
     if (scheduledDate.isEmpty) return '';
@@ -490,7 +496,7 @@ class HomeVisitModel {
       patientId: json['patient_id'],
       patientName: json['patient_name'],
       patientDisplayId: json['patient_display_id'],
-      patientPhone: json['patient_phone'],
+      patientPhone: json['patient_phone']?.toString() ?? json['phone']?.toString(),
       patientAge: json['patient_age'],
       patientGender: json['patient_gender'],
       nurseId: json['nurse_id'],
@@ -507,6 +513,9 @@ class HomeVisitModel {
       signedAt: json['signed_at'],
       notes: json['notes'],
       feedback: json['feedback'],
+      consultationFee: json['consultation_fee'] != null
+          ? double.tryParse(json['consultation_fee'].toString())
+          : null,
       carriedItems: (json['carried_items'] as List<dynamic>?)
               ?.map((item) => HomeVisitCarriedItem.fromJson(item))
               .toList() ??
@@ -544,10 +553,14 @@ class HomeVisitModel {
           ? json['invoice'] as Map<String, dynamic>
           : (json['invoice_number'] != null
               ? {
+                  'id': json['invoice_id'],
                   'invoice_number': json['invoice_number'],
                   'total_amount': json['invoice_total_amount'],
+                  'discount': json['invoice_discount'] ?? 0.0,
                   'net_amount': json['invoice_net_amount'],
+                  'paid_amount': json['invoice_paid_amount'] ?? 0.0,
                   'payment_status': json['invoice_payment_status'],
+                  'billing_status': json['invoice_billing_status'] ?? 'Open',
                 }
               : null),
       sessionStartTimes: json['session_start_times'] is Map<String, dynamic>

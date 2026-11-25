@@ -14,11 +14,15 @@ import '../controllers/patient_controller.dart';
 import '../controllers/admin_controller.dart';
 import '../controllers/appointment_controller.dart';
 import '../widgets/appointment_details_dialog.dart';
+import '../widgets/check_in_vitals_dialog.dart';
+import '../widgets/billing_receipt_dialog.dart';
+import '../utils/discard_dialog_helper.dart';
 import 'mocdoc_appointments_view.dart';
 import '../utils/date_formatter.dart';
 import '../utils/tamil_transliteration_helper.dart';
 import '../providers/language_provider.dart';
 import 'package:provider/provider.dart';
+import '../providers/auth_provider.dart';
 
 class AppointmentsView extends StatefulWidget {
   final bool startWithBookingForm;
@@ -46,7 +50,7 @@ class _AppointmentsViewState extends State<AppointmentsView> {
   String _searchQuery = '';
   final TextEditingController _apptSearchController = TextEditingController();
   DateTime? _filterDate = DateTime.now();
-  String _selectedApptType = 'Routine';
+  String? _selectedApptType;
   final List<String> _apptTypes = [
     'Routine',
     'Follow Up',
@@ -138,7 +142,8 @@ class _AppointmentsViewState extends State<AppointmentsView> {
     return 'Table';
   }
 
-  String _getTranslatedApptType(String type) {
+  String _getTranslatedApptType(String? type) {
+    if (type == null || type.trim().isEmpty) return '';
     switch (type.toLowerCase().trim()) {
       case 'routine':
         return context.tr('appt_type_routine', fallback: 'Routine');
@@ -192,6 +197,8 @@ class _AppointmentsViewState extends State<AppointmentsView> {
     switch (s) {
       case 'confirmed':
         return context.tr('status_confirmed', fallback: 'Confirmed');
+      case 'checked in':
+        return context.tr('status_checked_in', fallback: 'Checked In');
       case 'waiting':
         return context.tr('status_waiting', fallback: 'Waiting');
       case 'in consultation':
@@ -429,44 +436,129 @@ class _AppointmentsViewState extends State<AppointmentsView> {
     );
   }
 
-  // No longer needed: _deptDoctors map
+  void _checkInAppointment(AppointmentModel appt) async {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final apptDt = DateFormatter.toDateTime(appt.appointmentDate);
 
-  // Dynamic Time Slots Generator
-  List<String> _generateAllTimeSlots() {
-    List<String> slots = [];
-    // Fallback default slots if no doctor is selected or profile is incomplete
-    // Morning Session: 09:00 AM - 01:00 PM
-    slots.addAll(_generateSlotsForSession(9, 0, 13, 0, 30));
-    // Afternoon Session: 02:00 PM - 05:00 PM
-    slots.addAll(_generateSlotsForSession(14, 0, 17, 0, 30));
-    return slots;
+    if (apptDt != null) {
+      final apptDay = DateTime(apptDt.year, apptDt.month, apptDt.day);
+      if (apptDay.isAfter(today)) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Cannot check in before the appointment date.'),
+              backgroundColor: AppTheme.dangerColor,
+            ),
+          );
+        }
+        return;
+      }
+    }
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => CheckInVitalsDialog(
+        appointment: appt,
+        onCompleted: _fetchData,
+      ),
+    );
   }
 
-  List<String> _generateSlotsForDoctor(UserModel doctor) {
-    if (doctor.slotStartTime == null || doctor.slotEndTime == null) {
-      return _generateAllTimeSlots();
-    }
-
-    int duration = _intervalMinutes;
-    if (doctor.slotDuration != null) {
-      duration =
-          int.tryParse(doctor.slotDuration!.split(' ')[0]) ?? _intervalMinutes;
-    }
-
+  Future<void> _startConsultation(AppointmentModel appt) async {
+    final userRole = Provider.of<AuthProvider>(context, listen: false).user?.role ?? '';
+    if (userRole.toLowerCase() == 'nurse') return;
     try {
-      DateTime start = _parseTime(doctor.slotStartTime!);
-      DateTime end = _parseTime(doctor.slotEndTime!);
-
-      List<String> slots = [];
-      DateTime current = start;
-      while (current.isBefore(end)) {
-        slots.add(DateFormat('hh:mm a').format(current));
-        current = current.add(Duration(minutes: duration));
+      await _appointmentController.updateStatus(appt.id!, 'In Consultation');
+      _fetchData();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Consultation started for ${appt.patientName}.'),
+            backgroundColor: AppTheme.secondaryColor,
+          ),
+        );
       }
-      return slots;
     } catch (e) {
-      return _generateAllTimeSlots();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to start consultation: $e'),
+            backgroundColor: AppTheme.dangerColor,
+          ),
+        );
+      }
     }
+  }
+
+  // No longer needed: _deptDoctors map
+
+
+  List<String> _generateSlotsForDoctor(UserModel doctor) {
+    int duration = _intervalMinutes;
+    if (doctor.slotDuration != null && doctor.slotDuration!.trim().isNotEmpty) {
+      final digits = RegExp(r'\d+').firstMatch(doctor.slotDuration!)?.group(0);
+      if (digits != null) {
+        duration = int.tryParse(digits) ?? _intervalMinutes;
+      }
+    }
+    if (duration <= 0) duration = 30;
+
+    List<String> slots = [];
+
+    // 1. Primary: Doctor's Consultation Hours (slotStartTime to slotEndTime)
+    if (doctor.slotStartTime != null && doctor.slotStartTime!.trim().isNotEmpty &&
+        doctor.slotEndTime != null && doctor.slotEndTime!.trim().isNotEmpty) {
+      try {
+        DateTime start = _parseTime(doctor.slotStartTime!.trim());
+        DateTime end = _parseTime(doctor.slotEndTime!.trim());
+        DateTime current = start;
+        while (current.isBefore(end)) {
+          slots.add(DateFormat('hh:mm a').format(current));
+          current = current.add(Duration(minutes: duration));
+        }
+        if (slots.isNotEmpty) return slots;
+      } catch (e) {
+        debugPrint('Error generating slots from doctor consultation hours: $e');
+      }
+    }
+
+    // 2. Secondary: If doctor only configured morning or evening shifts
+    final mStartStr = doctor.morningStartTime;
+    final mEndStr = doctor.morningEndTime;
+    if (mStartStr != null && mStartStr.trim().isNotEmpty &&
+        mEndStr != null && mEndStr.trim().isNotEmpty) {
+      try {
+        DateTime mStart = _parseTime(mStartStr.trim());
+        DateTime mEnd = _parseTime(mEndStr.trim());
+        DateTime currentM = mStart;
+        while (currentM.isBefore(mEnd)) {
+          slots.add(DateFormat('hh:mm a').format(currentM));
+          currentM = currentM.add(Duration(minutes: duration));
+        }
+      } catch (e) {
+        debugPrint('Error generating morning slots: $e');
+      }
+    }
+
+    final eStartStr = doctor.eveningStartTime;
+    final eEndStr = doctor.eveningEndTime;
+    if (eStartStr != null && eStartStr.trim().isNotEmpty &&
+        eEndStr != null && eEndStr.trim().isNotEmpty) {
+      try {
+        DateTime eStart = _parseTime(eStartStr.trim());
+        DateTime eEnd = _parseTime(eEndStr.trim());
+        DateTime currentE = eStart;
+        while (currentE.isBefore(eEnd)) {
+          slots.add(DateFormat('hh:mm a').format(currentE));
+          currentE = currentE.add(Duration(minutes: duration));
+        }
+      } catch (e) {
+        debugPrint('Error generating evening slots: $e');
+      }
+    }
+
+    return slots;
   }
 
   DateTime _parseTime(String timeStr) {
@@ -481,22 +573,94 @@ class _AppointmentsViewState extends State<AppointmentsView> {
     return DateTime(2026, 1, 1, hour, minute);
   }
 
-  List<String> _generateSlotsForSession(
-    int startHour,
-    int startMin,
-    int endHour,
-    int endMin,
-    int interval,
-  ) {
-    List<String> sessionSlots = [];
-    DateTime start = DateTime(2026, 1, 1, startHour, startMin);
-    DateTime end = DateTime(2026, 1, 1, endHour, endMin);
+  Widget _buildConsultationHoursBanner() {
+    final doc = _selectedDoctor;
+    if (doc == null) return const SizedBox.shrink();
 
-    while (start.isBefore(end)) {
-      sessionSlots.add(DateFormat('hh:mm a').format(start));
-      start = start.add(Duration(minutes: interval));
+    String hoursText = '';
+    if (doc.slotStartTime != null && doc.slotStartTime!.trim().isNotEmpty &&
+        doc.slotEndTime != null && doc.slotEndTime!.trim().isNotEmpty) {
+      hoursText = '${doc.slotStartTime} - ${doc.slotEndTime}';
+    } else if (doc.morningStartTime != null && doc.morningStartTime!.trim().isNotEmpty &&
+               doc.morningEndTime != null && doc.morningEndTime!.trim().isNotEmpty) {
+      hoursText = '${doc.morningStartTime} - ${doc.morningEndTime}';
+      if (doc.eveningStartTime != null && doc.eveningStartTime!.trim().isNotEmpty &&
+          doc.eveningEndTime != null && doc.eveningEndTime!.trim().isNotEmpty) {
+        hoursText += ' & ${doc.eveningStartTime} - ${doc.eveningEndTime}';
+      }
     }
-    return sessionSlots;
+
+    if (hoursText.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: Colors.amber.withOpacity(0.1),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.amber.shade300),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.info_outline, size: 16, color: Colors.amber.shade800),
+            const SizedBox(width: 8),
+            Text(
+              'Doctor has not configured consultation hours.',
+              style: TextStyle(fontSize: 12, color: Colors.amber.shade900),
+            ),
+          ],
+        ),
+      );
+    }
+
+    String durationText = '';
+    if (doc.slotDuration != null && doc.slotDuration!.trim().isNotEmpty) {
+      final digits = RegExp(r'\d+').firstMatch(doc.slotDuration!)?.group(0);
+      if (digits != null) {
+        durationText = '$digits min slots';
+      }
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      decoration: BoxDecoration(
+        color: AppTheme.primaryColor.withOpacity(0.07),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppTheme.primaryColor.withOpacity(0.2)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.access_time_filled, size: 16, color: AppTheme.primaryColor),
+          const SizedBox(width: 8),
+          Text(
+            'Doctor Consultation Hours: $hoursText',
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: AppTheme.primaryColor,
+            ),
+          ),
+          if (durationText.isNotEmpty) ...[
+            const SizedBox(width: 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+              decoration: BoxDecoration(
+                color: AppTheme.primaryColor,
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Text(
+                durationText,
+                style: const TextStyle(
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white,
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
   }
 
   String _cleanDoctorName(String? name) {
@@ -659,34 +823,29 @@ class _AppointmentsViewState extends State<AppointmentsView> {
   List<String> _getFilteredTimeSlots() {
     if (_bookingDate == null || _selectedDoctor == null) return [];
 
+    final now = DateTime.now();
+    final todayDate = DateTime(now.year, now.month, now.day);
+    final bookingDay = DateTime(_bookingDate!.year, _bookingDate!.month, _bookingDate!.day);
+
+    // If selected booking date is in the past, no slots are available
+    if (bookingDay.isBefore(todayDate)) {
+      return [];
+    }
+
+    final bool isToday = bookingDay.isAtSameMomentAs(todayDate);
+
     List<String> baseSlots = _availableSlots;
     if (baseSlots.isEmpty) {
       baseSlots = _generateSlotsForDoctor(_selectedDoctor!);
     }
 
-    final now = DateTime.now();
-    final bool isToday = _bookingDate!.year == now.year &&
-        _bookingDate!.month == now.month &&
-        _bookingDate!.day == now.day;
-
-    int duration = _intervalMinutes;
-    if (_selectedDoctor?.slotDuration != null) {
-      final digits =
-          RegExp(r'\d+').firstMatch(_selectedDoctor!.slotDuration!)?.group(0);
-      if (digits != null) {
-        duration = int.tryParse(digits) ?? _intervalMinutes;
-      }
-    }
-    if (duration <= 0) duration = 30;
-
     return baseSlots.where((slot) {
-      // 1. If booking for today, display only current and upcoming slots (hide past slots)
+      // 1. If booking for today, exclude expired and past-time slots
       if (isToday) {
         final slotStart = _parseSlotDateTime(slot, now);
         if (slotStart != null) {
-          final slotEnd = slotStart.add(Duration(minutes: duration));
-          // If the slot has already concluded, exclude it
-          if (slotEnd.isBefore(now)) {
+          // If the slot start time has already passed, exclude it
+          if (slotStart.isBefore(now)) {
             return false;
           }
         }
@@ -1008,12 +1167,18 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                     children: [
                       _buildFieldLabel(context.tr('appointment_type_req', fallback: 'Appointment Type *')),
                       _buildDropdown<String>(
-                        hint: '',
+                        hint: context.tr('select_appointment_type', fallback: 'Select Appointment Type'),
                         value: _selectedApptType,
                         items: _apptTypes,
                         itemLabel: (s) => _getTranslatedApptType(s),
+                        validator: (val) {
+                          if (val == null || val.trim().isEmpty || _selectedApptType == null || _selectedApptType!.trim().isEmpty) {
+                            return context.tr('appointment_type_required', fallback: 'Appointment Type is required');
+                          }
+                          return null;
+                        },
                         onChanged: (val) =>
-                            setState(() => _selectedApptType = val ?? ''),
+                            setState(() => _selectedApptType = val),
                       ),
                       const SizedBox(height: 16),
                       _buildFieldLabel(context.tr('reason_req', fallback: 'Reason *')),
@@ -1272,17 +1437,26 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                         const SizedBox(height: 24),
                         _buildFieldLabel(context.tr('available_time_slots_req', fallback: 'Available Time Slots *')),
                         const SizedBox(height: 8),
+                        _buildConsultationHoursBanner(),
+                        const SizedBox(height: 12),
                         () {
                           final filteredSlots = _getFilteredTimeSlots();
                           if (filteredSlots.isEmpty) {
+                            final hasHours = (_selectedDoctor?.slotStartTime != null && _selectedDoctor!.slotStartTime!.trim().isNotEmpty) ||
+                                             (_selectedDoctor?.morningStartTime != null && _selectedDoctor!.morningStartTime!.trim().isNotEmpty);
+                            String message = context.tr('no_slots_today', fallback: 'No more slots available for this date');
+                            if (!hasHours) {
+                              message = 'Doctor has not configured consultation hours.';
+                            }
                             return Padding(
                               padding: const EdgeInsets.symmetric(vertical: 20),
                               child: Center(
                                 child: Text(
-                                  context.tr('no_slots_today', fallback: 'No more slots available for today'),
+                                  message,
                                   style: const TextStyle(
                                     color: Colors.red,
                                     fontSize: 12,
+                                    fontWeight: FontWeight.w500,
                                   ),
                                 ),
                               ),
@@ -1412,7 +1586,7 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                           _selectedTime!,
                         ),
 
-                      if (_selectedApptType.isNotEmpty)
+                      if (_selectedApptType != null && _selectedApptType!.isNotEmpty)
                         _buildSummaryItem(
                           Icons.info_outline,
                           context.tr('type_heading', fallback: 'Type'),
@@ -1425,10 +1599,23 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                             (_selectedPatient != null &&
                                 _selectedDoctor != null &&
                                 _bookingDate != null &&
-                                _selectedTime != null)
+                                _selectedTime != null &&
+                                _selectedApptType != null &&
+                                _selectedApptType!.isNotEmpty)
                             ? () async {
                                 try {
                                   _validateVitals();
+                                  if (_selectedApptType == null || _selectedApptType!.trim().isEmpty) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text(
+                                          context.tr('appointment_type_required', fallback: 'Appointment Type is required'),
+                                        ),
+                                        backgroundColor: Colors.red,
+                                      ),
+                                    );
+                                    return;
+                                  }
                                   final hasVitalsDuringBooking =
                                       _bpSystolicController.text.trim().isNotEmpty &&
                                       _tempController.text.trim().isNotEmpty;
@@ -1442,7 +1629,7 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                                       'dd/MM/yyyy',
                                     ).format(_bookingDate!),
                                     appointmentTime: _selectedTime!,
-                                    appointmentType: _selectedApptType,
+                                    appointmentType: _selectedApptType!,
                                     bloodPressureSystolic: int.tryParse(
                                       _bpSystolicController.text,
                                     ),
@@ -1483,17 +1670,21 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                                   _clearSelections();
                                   _fetchData(); // Refresh the table
                                 } catch (e) {
+                                  final cleanMsg = e.toString()
+                                      .replaceAll('Exception: ', '')
+                                      .replaceAll('Error: ', '')
+                                      .trim();
                                   ScaffoldMessenger.of(context).showSnackBar(
                                     SnackBar(
-                                      content: Text('Error: $e'),
-                                      backgroundColor: Colors.red,
+                                      content: Text(cleanMsg.isNotEmpty ? cleanMsg : 'Unable to book appointment. Please try again.'),
+                                      backgroundColor: AppTheme.dangerColor,
                                     ),
                                   );
                                 }
                               }
                             : null,
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.red,
+                          backgroundColor: AppTheme.primaryColor,
                           foregroundColor: Colors.white,
                           padding: const EdgeInsets.symmetric(
                             horizontal: 40,
@@ -1730,12 +1921,18 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                               children: [
                                 _buildFieldLabel(context.tr('appointment_type_req', fallback: 'Appointment Type *')),
                                 _buildDropdown<String>(
-                                  hint: '',
+                                  hint: context.tr('select_appointment_type', fallback: 'Select Appointment Type'),
                                   value: _selectedApptType,
                                   items: _apptTypes,
                                   itemLabel: (s) => _getTranslatedApptType(s),
+                                  validator: (val) {
+                                    if (val == null || val.trim().isEmpty || _selectedApptType == null || _selectedApptType!.trim().isEmpty) {
+                                      return context.tr('appointment_type_required', fallback: 'Appointment Type is required');
+                                    }
+                                    return null;
+                                  },
                                   onChanged: (val) =>
-                                      setState(() => _selectedApptType = val ?? ''),
+                                      setState(() => _selectedApptType = val),
                                 ),
                                 const SizedBox(height: 16),
                                 _buildFieldLabel(context.tr('reason_req', fallback: 'Reason *')),
@@ -2034,6 +2231,8 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                                   const SizedBox(height: 24),
                                   _buildFieldLabel(context.tr('available_time_slots_req', fallback: 'Available Time Slots *')),
                                   const SizedBox(height: 8),
+                                  _buildConsultationHoursBanner(),
+                                  const SizedBox(height: 12),
                                   () {
                                     final filteredSlots =
                                         _getFilteredTimeSlots();
@@ -2055,13 +2254,19 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                                       );
                                     }
                                     if (filteredSlots.isEmpty) {
+                                      final hasHours = (_selectedDoctor?.slotStartTime != null && _selectedDoctor!.slotStartTime!.trim().isNotEmpty) ||
+                                                       (_selectedDoctor?.morningStartTime != null && _selectedDoctor!.morningStartTime!.trim().isNotEmpty);
+                                      String message = context.tr('no_slots_today', fallback: 'No more slots available for this date');
+                                      if (!hasHours) {
+                                        message = 'Doctor has not configured consultation hours.';
+                                      }
                                       return Padding(
                                         padding: const EdgeInsets.symmetric(
                                           vertical: 20,
                                         ),
                                         child: Center(
                                           child: Text(
-                                            context.tr('no_slots_today', fallback: 'No more slots available for today'),
+                                            message,
                                             style: const TextStyle(
                                               color: Colors.red,
                                               fontSize: 12,
@@ -2153,10 +2358,9 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                 // Right Column: Summary
                 Expanded(
                   flex: 1,
-                  child: Column(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.all(16),
+                  child: SingleChildScrollView(
+                    child: Container(
+                      padding: const EdgeInsets.all(16),
                         decoration: BoxDecoration(
                           color: const Color(0xFFF1F5F9).withOpacity(0.5),
                           borderRadius: BorderRadius.circular(16),
@@ -2208,7 +2412,7 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                                 _selectedTime!,
                               ),
 
-                            if (_selectedApptType.isNotEmpty)
+                            if (_selectedApptType != null && _selectedApptType!.isNotEmpty)
                               _buildSummaryItem(
                                 Icons.info_outline,
                                 context.tr('type_heading', fallback: 'Type'),
@@ -2221,10 +2425,23 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                                   (_selectedPatient != null &&
                                       _selectedDoctor != null &&
                                       _bookingDate != null &&
-                                      _selectedTime != null)
+                                      _selectedTime != null &&
+                                      _selectedApptType != null &&
+                                      _selectedApptType!.isNotEmpty)
                                   ? () async {
                                       try {
                                         _validateVitals();
+                                        if (_selectedApptType == null || _selectedApptType!.trim().isEmpty) {
+                                          ScaffoldMessenger.of(context).showSnackBar(
+                                            SnackBar(
+                                              content: Text(
+                                                context.tr('appointment_type_required', fallback: 'Appointment Type is required'),
+                                              ),
+                                              backgroundColor: Colors.red,
+                                            ),
+                                          );
+                                          return;
+                                        }
                                         final hasVitalsDuringBooking =
                                             _bpSystolicController.text.trim().isNotEmpty &&
                                             _tempController.text.trim().isNotEmpty;
@@ -2238,7 +2455,7 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                                             'dd/MM/yyyy',
                                           ).format(_bookingDate!),
                                           appointmentTime: _selectedTime!,
-                                          appointmentType: _selectedApptType,
+                                          appointmentType: _selectedApptType!,
                                           bloodPressureSystolic: int.tryParse(
                                             _bpSystolicController.text,
                                           ),
@@ -2282,19 +2499,23 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                                         _clearSelections();
                                         _fetchData(); // Refresh the table
                                       } catch (e) {
-                                        ScaffoldMessenger.of(
-                                          context,
-                                        ).showSnackBar(
-                                          SnackBar(
-                                            content: Text('Error: $e'),
-                                            backgroundColor: Colors.red,
-                                          ),
-                                        );
-                                      }
+                                          final cleanMsg = e.toString()
+                                              .replaceAll('Exception: ', '')
+                                              .replaceAll('Error: ', '')
+                                              .trim();
+                                          ScaffoldMessenger.of(
+                                            context,
+                                          ).showSnackBar(
+                                            SnackBar(
+                                              content: Text(cleanMsg.isNotEmpty ? cleanMsg : 'Unable to book appointment. Please try again.'),
+                                              backgroundColor: AppTheme.dangerColor,
+                                            ),
+                                          );
+                                        }
                                     }
                                   : null,
                               style: ElevatedButton.styleFrom(
-                                backgroundColor: Colors.red,
+                                backgroundColor: AppTheme.primaryColor,
                                 foregroundColor: Colors.white,
                                 padding: const EdgeInsets.symmetric(
                                   horizontal: 20,
@@ -2321,8 +2542,7 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                           ],
                         ),
                       ),
-                    ],
-                  ),
+                    ),
                 ),
               ],
             ),
@@ -2568,7 +2788,7 @@ class _AppointmentsViewState extends State<AppointmentsView> {
     _sugarController.clear();
     _tempController.clear();
     _reasonController.clear();
-    _selectedApptType = 'Routine';
+    _selectedApptType = null;
   }
 
   Widget _buildFormCard({
@@ -2623,6 +2843,7 @@ class _AppointmentsViewState extends State<AppointmentsView> {
     required List<T> items,
     required String Function(T) itemLabel,
     required Function(T?) onChanged,
+    FormFieldValidator<String>? validator,
   }) {
     final map = <String, String>{};
     for (int i = 0; i < items.length; i++) {
@@ -2638,9 +2859,11 @@ class _AppointmentsViewState extends State<AppointmentsView> {
     }
     
     return CustomDropdownSearch(
-      label: hint,
+      label: '',
+      hint: hint.isNotEmpty ? hint : 'Select...',
       value: selectedIndexString,
       dropdownMap: map,
+      validator: validator,
       onChanged: (val) {
         if (val != null) {
           final idx = int.tryParse(val);
@@ -2719,16 +2942,12 @@ class _AppointmentsViewState extends State<AppointmentsView> {
         children: [
           Text(
             context.tr('appointments', fallback: 'Appointments'),
-            style: const TextStyle(
-              fontSize: 24,
-              fontWeight: FontWeight.bold,
-              color: AppTheme.textPrimaryColor,
-            ),
+            style: AppTheme.pageTitleStyle(context, isMobile: true),
           ),
           const SizedBox(height: 4),
           Text(
             context.tr('manage_appointments_sub', fallback: 'Manage and schedule patient appointments'),
-            style: TextStyle(color: AppTheme.textSecondaryColor, fontSize: 13),
+            style: AppTheme.pageSubtitleStyle(context, isMobile: true),
           ),
           const SizedBox(height: 12),
           SingleChildScrollView(
@@ -2739,6 +2958,7 @@ class _AppointmentsViewState extends State<AppointmentsView> {
           Row(
             children: [
               Expanded(
+                flex: 2,
                 child: OutlinedButton.icon(
                   onPressed: _isLoadingData ? null : _fetchData,
                   icon: _isLoadingData
@@ -2748,10 +2968,18 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
                       : const Icon(Icons.refresh, size: 18),
-                  label: Text(context.tr('refresh', fallback: 'Refresh')),
+                  label: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text(
+                      context.tr('refresh', fallback: 'Refresh'),
+                      maxLines: 1,
+                      softWrap: false,
+                    ),
+                  ),
                   style: OutlinedButton.styleFrom(
                     foregroundColor: AppTheme.primaryColor,
                     side: const BorderSide(color: AppTheme.primaryColor),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(8),
                     ),
@@ -2761,7 +2989,7 @@ class _AppointmentsViewState extends State<AppointmentsView> {
               ),
               const SizedBox(width: 10),
               Expanded(
-                flex: 2,
+                flex: 3,
                 child: ElevatedButton.icon(
                   onPressed: () {
                     final path = GoRouterState.of(context).matchedLocation;
@@ -2774,10 +3002,18 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                     }
                   },
                   icon: const Icon(Icons.add, size: 20),
-                  label: Text(context.tr('book_appointment', fallback: 'Book Appointment')),
+                  label: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text(
+                      context.tr('book_appointment', fallback: 'Book Appointment'),
+                      maxLines: 1,
+                      softWrap: false,
+                    ),
+                  ),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: AppTheme.primaryColor,
                     foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                     minimumSize: const Size(0, 44),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(8),
@@ -2803,19 +3039,12 @@ class _AppointmentsViewState extends State<AppointmentsView> {
               children: [
                 Text(
                   context.tr('appointments', fallback: 'Appointments'),
-                  style: const TextStyle(
-                    fontSize: 28,
-                    fontWeight: FontWeight.bold,
-                    color: AppTheme.textPrimaryColor,
-                  ),
+                  style: AppTheme.pageTitleStyle(context, isMobile: false),
                 ),
                 const SizedBox(height: 4),
                 Text(
                   context.tr('manage_appointments_sub', fallback: 'Manage and schedule patient appointments'),
-                  style: TextStyle(
-                    color: AppTheme.textSecondaryColor,
-                    fontSize: 14,
-                  ),
+                  style: AppTheme.pageSubtitleStyle(context, isMobile: false),
                 ),
               ],
             ),
@@ -3383,26 +3612,20 @@ class _AppointmentsViewState extends State<AppointmentsView> {
       child: Column(
         children: [
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-            decoration: BoxDecoration(
-              color: AppTheme.isDark(context) ? AppTheme.darkSurfaceColor : const Color(0xFFEDF2F7),
-              borderRadius: const BorderRadius.only(
-                topLeft: Radius.circular(12),
-                topRight: Radius.circular(12),
-              ),
-            ),
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+            decoration: AppTheme.tableHeaderDecoration(context),
             child: Row(
               children: [
-                _buildTableHeader('S.No', flex: 1),
-                _buildTableHeader('Time', flex: 2),
-                _buildTableHeader('Date', flex: 2),
-                _buildTableHeader('Patient', flex: 4),
-                _buildTableHeader('Department', flex: 2),
-                _buildTableHeader('Doctor', flex: 3),
-                _buildTableHeader('Type', flex: 2),
-                _buildTableHeader('Reason', flex: 3),
-                _buildTableHeader('Status', flex: 2),
-                _buildTableHeader('Actions', flex: 2, leftPadding: 16),
+                _buildTableHeader('S.No', icon: Icons.tag, flex: 1),
+                _buildTableHeader('Time', icon: Icons.access_time, flex: 2),
+                _buildTableHeader('Date', icon: Icons.calendar_today_outlined, flex: 2),
+                _buildTableHeader('Patient', icon: Icons.person_outline, flex: 4),
+                _buildTableHeader('Department', icon: Icons.business_outlined, flex: 2),
+                _buildTableHeader('Doctor', icon: Icons.medical_services_outlined, flex: 3),
+                _buildTableHeader('Type', icon: Icons.category_outlined, flex: 2),
+                _buildTableHeader('Reason', icon: Icons.info_outline, flex: 2),
+                _buildTableHeader('Status', icon: Icons.verified_outlined, flex: 2),
+                _buildTableHeader('Actions', icon: Icons.bolt_outlined, flex: 3, leftPadding: 8),
               ],
             ),
           ),
@@ -3495,20 +3718,44 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                   ),
                 ],
               ),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                  color: statusBg,
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Text(
-                  _getTranslatedStatus(appt.status),
-                  style: TextStyle(
-                    color: statusColor,
-                    fontSize: 10,
-                    fontWeight: FontWeight.bold,
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (appt.tokenNumber != null) ...[
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: AppTheme.primaryColor.withOpacity(0.12),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: AppTheme.primaryColor.withOpacity(0.3)),
+                      ),
+                      child: Text(
+                        'Token #${appt.tokenNumber}',
+                        style: const TextStyle(
+                          color: AppTheme.primaryColor,
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                  ],
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: statusBg,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      _getTranslatedStatus(appt.status),
+                      style: TextStyle(
+                        color: statusColor,
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
                   ),
-                ),
+                ],
               ),
             ],
           ),
@@ -3618,8 +3865,86 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
                       ),
                     ),
-                    if (appt.status == 'Confirmed') ...[
-                      if (!hasVitals && !isFuture)
+                    if (appt.status == 'Confirmed' || appt.status == 'Scheduled')
+                      ElevatedButton.icon(
+                        onPressed: () => _checkInAppointment(appt),
+                        icon: const Icon(Icons.how_to_reg, size: 12, color: Colors.white),
+                        label: Text(context.tr('check_in', fallback: 'Check In'), style: const TextStyle(fontSize: 11)),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF0F766E),
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          minimumSize: const Size(0, 36),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                        ),
+                      ),
+                    if (Provider.of<AuthProvider>(context, listen: false).user?.role.toLowerCase() != 'nurse' &&
+                        (appt.status == 'Waiting' ||
+                         appt.status == 'Confirmed' ||
+                         appt.status == 'Scheduled' ||
+                         appt.status == 'Booked' ||
+                         appt.status == 'Checked In' ||
+                         appt.status == 'Checked-in' ||
+                         appt.status == 'Arrived'))
+                      ElevatedButton.icon(
+                        onPressed: () => _startConsultation(appt),
+                        icon: const Icon(Icons.play_arrow_rounded, size: 14, color: Colors.white),
+                        label: const Text('Start Consult', style: TextStyle(fontSize: 11)),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppTheme.secondaryColor,
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          minimumSize: const Size(0, 36),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                        ),
+                      ),
+                    if (Provider.of<AuthProvider>(context, listen: false).user?.role.toLowerCase() != 'nurse' &&
+                        appt.status != 'Cancelled')
+                      ElevatedButton.icon(
+                        onPressed: () {
+                          BillingReceiptDialog.show(
+                            context,
+                            appointmentId: appt.id,
+                            onPaymentSuccess: _fetchData,
+                          );
+                        },
+                        icon: Icon(
+                          (appt.billingPaymentStatus == 'Paid' || appt.consultationFee == 0)
+                              ? Icons.receipt_long
+                              : Icons.payment,
+                          size: 13,
+                          color: Colors.white,
+                        ),
+                        label: Text(
+                          (appt.billingPaymentStatus == 'Paid' || appt.consultationFee == 0)
+                              ? 'Receipt'
+                              : 'Collect Fee',
+                          style: const TextStyle(fontSize: 11),
+                        ),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: (appt.billingPaymentStatus == 'Paid' || appt.consultationFee == 0)
+                              ? const Color(0xFF16A34A)
+                              : const Color(0xFFD97706),
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          minimumSize: const Size(0, 36),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                        ),
+                      ),
+                    if (appt.status == 'Checked In' || appt.status == 'Checked-in')
+                      ElevatedButton.icon(
+                        onPressed: () => _checkInAppointment(appt),
+                        icon: const Icon(Icons.monitor_heart, size: 12, color: Colors.white),
+                        label: const Text('Capture Vitals', style: TextStyle(fontSize: 11)),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF0F766E),
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          minimumSize: const Size(0, 36),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                        ),
+                      ),
+                    if (appt.status == 'Confirmed' ||
+                        appt.status == 'Scheduled' ||
+                        appt.status == 'Checked In' ||
+                        appt.status == 'Checked-in') ...[
+                      if (!hasVitals && !isFuture && appt.status != 'Checked In' && appt.status != 'Checked-in')
                         ElevatedButton.icon(
                           onPressed: () => _openVitalsEntryDialog(context, appt),
                           icon: const Icon(Icons.monitor_heart, size: 12, color: Colors.white),
@@ -3637,10 +3962,17 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                           String? cancelReason;
                           await showDialog(
                             context: context,
+                            barrierDismissible: false,
                             builder: (dialogCtx) {
                               final ctrl = TextEditingController();
                               final formKey = GlobalKey<FormState>();
-                              return AlertDialog(
+                              return PopScope(
+                                canPop: false,
+                                onPopInvokedWithResult: (didPop, result) {
+                                  if (didPop) return;
+                                  DiscardDialogHelper.handleCancelOrDismiss(dialogCtx, isDirty: ctrl.text.trim().isNotEmpty);
+                                },
+                                child: AlertDialog(
                                 shape: RoundedRectangleBorder(
                                   borderRadius: BorderRadius.circular(16),
                                 ),
@@ -3760,7 +4092,7 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                                 ),
                                 actions: [
                                   OutlinedButton(
-                                    onPressed: () => Navigator.pop(dialogCtx),
+                                      onPressed: () => DiscardDialogHelper.handleCancelOrDismiss(dialogCtx, isDirty: ctrl.text.trim().isNotEmpty),
                                     style: OutlinedButton.styleFrom(
                                       foregroundColor: AppTheme.textSecondaryColor,
                                       side: const BorderSide(color: AppTheme.borderColor),
@@ -3772,7 +4104,7 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                                   ),
                                   ElevatedButton(
                                     onPressed: () {
-                                      if (formKey.currentState!.validate()) {
+                                      if (formKey.validateAndScroll()) {
                                         cancelReason = ctrl.text.trim();
                                         Navigator.pop(dialogCtx);
                                       }
@@ -3787,6 +4119,7 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                                     child: const Text('Cancel Appointment'),
                                   ),
                                 ],
+                                ),
                               );
                             },
                           );
@@ -3854,6 +4187,7 @@ class _AppointmentsViewState extends State<AppointmentsView> {
 
   Widget _buildTableHeader(
     String label, {
+    IconData? icon,
     int flex = 1,
     double leftPadding = 0,
   }) {
@@ -3878,20 +4212,31 @@ class _AppointmentsViewState extends State<AppointmentsView> {
       translated = context.tr('actions', fallback: label);
     }
 
+    final textWidget = Text(
+      translated,
+      style: AppTheme.tableHeadingTextStyle(context),
+      overflow: TextOverflow.ellipsis,
+    );
+
+    Widget content;
+    if (icon != null) {
+      content = Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: AppTheme.tableHeadingIconSize, color: AppTheme.getTableHeadingIconColor(context)),
+          const SizedBox(width: 6),
+          Flexible(child: textWidget),
+        ],
+      );
+    } else {
+      content = textWidget;
+    }
+
     return Expanded(
       flex: flex,
       child: Padding(
         padding: EdgeInsets.only(left: leftPadding),
-        child: Text(
-          translated,
-          style: TextStyle(
-            color: AppTheme.isDark(context)
-                ? AppTheme.darkTextSecondaryColor
-                : const Color(0xFF64748B),
-            fontSize: 13,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
+        child: content,
       ),
     );
   }
@@ -4054,14 +4399,39 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Text(
-                        TamilTransliterationHelper.translate(context, patientName),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontWeight: FontWeight.w600,
-                          fontSize: 13,
-                        ),
+                      Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              TamilTransliterationHelper.translate(context, patientName),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w600,
+                                fontSize: 13,
+                              ),
+                            ),
+                          ),
+                          if (appt.tokenNumber != null) ...[
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                              decoration: BoxDecoration(
+                                color: AppTheme.primaryColor.withOpacity(0.1),
+                                borderRadius: BorderRadius.circular(4),
+                                border: Border.all(color: AppTheme.primaryColor.withOpacity(0.25)),
+                              ),
+                              child: Text(
+                                'T#${appt.tokenNumber}',
+                                style: const TextStyle(
+                                  color: AppTheme.primaryColor,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ],
                       ),
                       const SizedBox(height: 2),
                       Text(
@@ -4158,7 +4528,7 @@ class _AppointmentsViewState extends State<AppointmentsView> {
             ),
           ),
           Expanded(
-            flex: 3,
+            flex: 2,
             child: Tooltip(
               message: reason,
               child: Text(
@@ -4189,9 +4559,9 @@ class _AppointmentsViewState extends State<AppointmentsView> {
             ),
           ),
           Expanded(
-            flex: 2,
+            flex: 3,
             child: Padding(
-              padding: const EdgeInsets.only(left: 16.0),
+              padding: const EdgeInsets.only(left: 8.0),
               child: Wrap(
                 spacing: 6,
                 runSpacing: 4,
@@ -4203,7 +4573,62 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                     const Color(0xFF3182CE),
                     onTap: () => _openViewDetailsDialog(context, appt),
                   ),
-                  if (status == 'Confirmed') ...[
+                  if (status == 'Confirmed' || status == 'Scheduled') ...[
+                    _buildActionLabel(
+                      Icons.how_to_reg_outlined,
+                      context.tr('check_in', fallback: 'Check In'),
+                      const Color(0xFF0F766E),
+                      onTap: () => _checkInAppointment(appt),
+                    ),
+                  ],
+                  if (Provider.of<AuthProvider>(context, listen: false).user?.role.toLowerCase() != 'nurse' &&
+                      (status == 'Waiting' ||
+                       status == 'Confirmed' ||
+                       status == 'Scheduled' ||
+                       status == 'Booked' ||
+                       status == 'Checked In' ||
+                       status == 'Checked-in' ||
+                       status == 'Arrived')) ...[
+                    _buildActionLabel(
+                      Icons.play_arrow_outlined,
+                      'Start Consult',
+                      AppTheme.secondaryColor,
+                      onTap: () => _startConsultation(appt),
+                    ),
+                  ],
+                  if (status == 'Checked In' || status == 'Checked-in') ...[
+                    _buildActionLabel(
+                      Icons.monitor_heart_outlined,
+                      'Vitals',
+                      const Color(0xFF0F766E),
+                      onTap: () => _checkInAppointment(appt),
+                    ),
+                  ],
+                  if (Provider.of<AuthProvider>(context, listen: false).user?.role.toLowerCase() != 'nurse' &&
+                      status != 'Cancelled') ...[
+                    _buildActionLabel(
+                      (appt.billingPaymentStatus == 'Paid' || appt.consultationFee == 0)
+                          ? Icons.receipt_long_outlined
+                          : Icons.payment_outlined,
+                      (appt.billingPaymentStatus == 'Paid' || appt.consultationFee == 0)
+                          ? 'Receipt'
+                          : 'Collect Fee',
+                      (appt.billingPaymentStatus == 'Paid' || appt.consultationFee == 0)
+                          ? const Color(0xFF16A34A)
+                          : const Color(0xFFD97706),
+                      onTap: () {
+                        BillingReceiptDialog.show(
+                          context,
+                          appointmentId: appt.id,
+                          onPaymentSuccess: _fetchData,
+                        );
+                      },
+                    ),
+                  ],
+                  if (status == 'Confirmed' ||
+                      status == 'Scheduled' ||
+                      status == 'Checked In' ||
+                      status == 'Checked-in') ...[
                     if (!hasVitals && !isFuture) ...[
                       _buildActionLabel(
                         Icons.monitor_heart_outlined,
@@ -4220,10 +4645,17 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                         String? cancelReason;
                         await showDialog(
                           context: context,
+                            barrierDismissible: false,
                           builder: (dialogCtx) {
                             final ctrl = TextEditingController();
                             final formKey = GlobalKey<FormState>();
-                            return AlertDialog(
+                              return PopScope(
+                                canPop: false,
+                                onPopInvokedWithResult: (didPop, result) {
+                                  if (didPop) return;
+                                  DiscardDialogHelper.handleCancelOrDismiss(dialogCtx, isDirty: ctrl.text.trim().isNotEmpty);
+                                },
+                                child: AlertDialog(
                               shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(16),
                               ),
@@ -4343,7 +4775,7 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                               ),
                               actions: [
                                 OutlinedButton(
-                                  onPressed: () => Navigator.pop(dialogCtx),
+                                      onPressed: () => DiscardDialogHelper.handleCancelOrDismiss(dialogCtx, isDirty: ctrl.text.trim().isNotEmpty),
                                   style: OutlinedButton.styleFrom(
                                     foregroundColor: AppTheme.textSecondaryColor,
                                     side: const BorderSide(color: AppTheme.borderColor),
@@ -4355,7 +4787,7 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                                 ),
                                 ElevatedButton(
                                   onPressed: () {
-                                    if (formKey.currentState!.validate()) {
+                                    if (formKey.validateAndScroll()) {
                                       cancelReason = ctrl.text.trim();
                                       Navigator.pop(dialogCtx);
                                     }
@@ -4370,7 +4802,8 @@ class _AppointmentsViewState extends State<AppointmentsView> {
                                   child: const Text('Cancel Appointment'),
                                 ),
                               ],
-                            );
+                                ),
+                              );
                           },
                         );
                         if (cancelReason != null) {

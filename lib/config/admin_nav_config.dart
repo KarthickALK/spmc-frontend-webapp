@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/user_model.dart';
+// Test commit
 
 /// Navigation item definition for Admin Dashboard.
 class AdminNavItem {
@@ -7,6 +8,7 @@ class AdminNavItem {
   final IconData icon;
   final String label;
   final String? requiredRole;
+  final String? permissionRequired;
   final bool isVisible;
 
   const AdminNavItem({
@@ -14,6 +16,7 @@ class AdminNavItem {
     required this.icon,
     required this.label,
     this.requiredRole,
+    this.permissionRequired,
     this.isVisible = true,
   });
 }
@@ -62,39 +65,46 @@ class AdminNavConfig {
   // -------------------------------------------------------------------------
 
   /// Access Control / RBAC (Visible)
-  static const bool showAccessControl = false;
+  static const bool showAccessControl = true;
 
   /// Appointments (Visible)
-  static const bool showAppointments = false;
+  static const bool showAppointments = true;
 
   /// OPD Management (Visible)
-  static const bool showOpdManagement = false;
+  static const bool showOpdManagement = true;
 
   /// IPD Management (Visible)
-  static const bool showIpdManagement = false;
+  static const bool showIpdManagement = true;
 
   /// OT Management (Visible)
-  static const bool showOtManagement = false;
+  static const bool showOtManagement = true;
 
   /// Shift Allocation (Visible)
-  static const bool showShiftAllocation = false;
+  static const bool showShiftAllocation = true;
 
   /// ICU & Emergency (Visible)
   static const bool showIcuEmergency = false;
 
   /// Billing & Invoices (Visible)
-  static const bool showBillingInvoices = false;
-
-  /// Inventory Management (Visible)
-  static const bool showInventoryManagement = false;
+  static const bool showBillingInvoices = true;
 
   // =========================================================================
   // CATALOG SUB-ITEM VISIBILITY TOGGLES
   // =========================================================================
+  static const bool showFoodStockManagement = true;
+  static const bool showInventoryManagement = showFoodStockManagement;
   static const bool showMedicineCatalog = true;
   static const bool showHomeVisitConsumables = true;
   static const bool showCarriedKitItems = true;
   static const bool showIpdBeds = true;
+  static const bool showBillingServices = true;
+  static const bool showLabTestsMaster = true;
+  static const bool showSpecializationsMaster = false;
+  static const bool showDbInitialization = false;
+  static const bool showDepartments = true;
+  static const bool showOperationTheatres = true;
+  static const bool showNurseShifts = true;
+  static const bool showRegionalAddress = true;
 
   // =========================================================================
   // HELPER METHODS TO FILTER AND RETURN ACTIVE MENU ITEMS
@@ -113,48 +123,56 @@ class AdminNavConfig {
         index: 1,
         icon: Icons.people_outline,
         label: 'Staff Management',
+        permissionRequired: 'manage_users',
         isVisible: showStaffManagement,
       ),
       const AdminNavItem(
         index: 2,
         icon: Icons.sick_outlined,
         label: 'Patients',
+        permissionRequired: 'view_patients',
         isVisible: showPatients,
       ),
       const AdminNavItem(
         index: 3,
         icon: Icons.security_outlined,
         label: 'Access Control (RBAC)',
+        permissionRequired: 'manage_rbac',
         isVisible: showAccessControl,
       ),
       const AdminNavItem(
         index: 4,
         icon: Icons.calendar_month_outlined,
         label: 'Appointments',
+        permissionRequired: 'book_appointment',
         isVisible: showAppointments,
       ),
       const AdminNavItem(
         index: 5,
         icon: Icons.monitor_heart_outlined,
         label: 'OPD Management',
+        permissionRequired: 'opd_assistance',
         isVisible: showOpdManagement,
       ),
       const AdminNavItem(
         index: 6,
         icon: Icons.hotel_outlined,
         label: 'IPD Management',
+        permissionRequired: 'ipd_doctor_rounds',
         isVisible: showIpdManagement,
       ),
       const AdminNavItem(
         index: 7,
         icon: Icons.healing_outlined,
         label: 'OT Management',
+        permissionRequired: 'ot_surgeries',
         isVisible: showOtManagement,
       ),
       const AdminNavItem(
         index: 8,
         icon: Icons.schedule_outlined,
         label: 'Shift Allocation',
+        permissionRequired: 'manage_shifts',
         isVisible: showShiftAllocation,
       ),
       const AdminNavItem(
@@ -167,26 +185,47 @@ class AdminNavConfig {
         index: 10,
         icon: Icons.receipt_long_outlined,
         label: 'Billing & Invoices',
+        permissionRequired: 'op_billing',
         isVisible: showBillingInvoices,
-      ),
-      const AdminNavItem(
-        index: 11,
-        icon: Icons.inventory_2_outlined,
-        label: 'Inventory Management',
-        isVisible: showInventoryManagement,
       ),
       const AdminNavItem(
         index: 12,
         icon: Icons.home_work_outlined,
         label: 'Home Visit Care',
+        permissionRequired: 'home_visit_care',
         isVisible: showHomeVisitCare,
       ),
     ];
+
+    final bool isSuperAdmin = user?.role == 'Super Admin';
 
     return allItems.where((item) {
       if (!item.isVisible) return false;
       if (item.requiredRole != null && user?.role != item.requiredRole) {
         return false;
+      }
+      if (isSuperAdmin) return true;
+      if (item.permissionRequired != null) {
+        if (item.permissionRequired == 'opd_assistance') {
+          return (user?.hasPermission('opd_assistance') ?? false) ||
+              (user?.hasPermission('conduct_consultations') ?? false);
+        }
+        if (item.permissionRequired == 'ipd_doctor_rounds') {
+          return (user?.hasPermission('ipd_doctor_rounds') ?? false) ||
+              (user?.hasPermission('ipd_nursing_care') ?? false) ||
+              (user?.hasPermission('ipd_admission_counter') ?? false);
+        }
+        if (item.permissionRequired == 'ot_surgeries') {
+          return (user?.hasPermission('ot_surgeries') ?? false) ||
+              (user?.hasPermission('ot_anaesthesia_pac') ?? false) ||
+              (user?.hasPermission('ot_who_checklist') ?? false) ||
+              (user?.hasPermission('ot_nursing_consumables') ?? false);
+        }
+        if (item.permissionRequired == 'op_billing') {
+          return (user?.hasPermission('op_billing') ?? false) ||
+              (user?.hasPermission('ipd_billing_settlement') ?? false);
+        }
+        return user?.hasPermission(item.permissionRequired!) ?? false;
       }
       return true;
     }).toList();
@@ -195,6 +234,12 @@ class AdminNavConfig {
   /// Returns the list of visible catalog sub-items
   static List<AdminCatalogSubItem> getVisibleCatalogSubItems() {
     final List<AdminCatalogSubItem> subItems = [
+      const AdminCatalogSubItem(
+        index: 11,
+        icon: Icons.restaurant_menu_outlined,
+        label: 'Food Stock Management',
+        isVisible: showFoodStockManagement,
+      ),
       const AdminCatalogSubItem(
         index: 13,
         icon: Icons.medication_outlined,
@@ -219,8 +264,59 @@ class AdminNavConfig {
         label: 'IPD Beds',
         isVisible: showIpdBeds,
       ),
+      const AdminCatalogSubItem(
+        index: 17,
+        icon: Icons.payments_outlined,
+        label: 'Billing & Services',
+        isVisible: showBillingServices,
+      ),
+      const AdminCatalogSubItem(
+        index: 18,
+        icon: Icons.biotech_outlined,
+        label: 'Lab Tests Catalog',
+        isVisible: showLabTestsMaster,
+      ),
+      const AdminCatalogSubItem(
+        index: 19,
+        icon: Icons.medical_services_outlined,
+        label: 'Specializations Master',
+        isVisible: showSpecializationsMaster,
+      ),
+      const AdminCatalogSubItem(
+        index: 20,
+        icon: Icons.storage_outlined,
+        label: 'Database Initialization',
+        isVisible: showDbInitialization,
+      ),
+      const AdminCatalogSubItem(
+        index: 21,
+        icon: Icons.apartment_rounded,
+        label: 'Department Master',
+        isVisible: showDepartments,
+      ),
+      const AdminCatalogSubItem(
+        index: 22,
+        icon: Icons.meeting_room_rounded,
+        label: 'Operation Theatres Master',
+        isVisible: showOperationTheatres,
+      ),
+      const AdminCatalogSubItem(
+        index: 23,
+        icon: Icons.schedule_rounded,
+        label: 'Nurse Shift Master',
+        isVisible: showNurseShifts,
+      ),
+      const AdminCatalogSubItem(
+        index: 24,
+        icon: Icons.map_rounded,
+        label: 'Regional Address Master',
+        isVisible: showRegionalAddress,
+      ),
     ];
 
     return subItems.where((item) => item.isVisible).toList();
   }
 }
+
+
+// Dummy commit

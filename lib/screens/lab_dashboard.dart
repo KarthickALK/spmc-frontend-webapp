@@ -10,10 +10,13 @@ import '../providers/auth_provider.dart';
 import '../widgets/nurse_widgets.dart' show LiveClock;
 import '../controllers/lab_controller.dart';
 import '../utils/logout_helper.dart';
+import '../utils/sidebar_state.dart';
 import '../widgets/user_profile_dialog.dart';
 import 'billing_management_view.dart';
+import '../widgets/access_denied_widget.dart';
 import '../utils/app_localizations.dart';
 import '../widgets/app_top_bar_actions.dart';
+import '../utils/discard_dialog_helper.dart';
 
 class LabDashboardScreen extends StatefulWidget {
   final int initialIndex;
@@ -202,10 +205,10 @@ class _LabDashboardScreenState extends State<LabDashboardScreen> {
 
     return Scaffold(
       backgroundColor: AppTheme.getBackgroundColor(context),
-      drawer: isMobile ? Drawer(child: _buildSidebar(context)) : null,
+      drawer: isMobile ? Drawer(child: _buildSidebar(context, isMobile: true)) : null,
       body: Row(
         children: [
-          if (!isMobile) _buildSidebar(context),
+          if (!isMobile) _buildSidebar(context, isMobile: false),
           Expanded(
             child: Column(
               children: [
@@ -219,139 +222,297 @@ class _LabDashboardScreenState extends State<LabDashboardScreen> {
     );
   }
 
-  Widget _buildSidebar(BuildContext context) {
+  Widget _buildSidebar(BuildContext context, {bool isMobile = false}) {
     final isDark = AppTheme.isDark(context);
-    return Consumer<AuthProvider>(
-      builder: (context, auth, _) {
-        final user = auth.user;
-        return Container(
-          width: 275,
-          margin: const EdgeInsets.fromLTRB(16, 16, 8, 16),
-          decoration: BoxDecoration(
-            color: AppTheme.getCardColor(context),
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: AppTheme.getBorderColor(context)),
-            boxShadow: isDark
-                ? []
-                : [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.06),
-                      blurRadius: 12,
-                      offset: const Offset(0, 4),
-                    ),
-                  ],
-          ),
-          child: Column(
-            children: [
-              // Logo Section
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-                child: Image.asset(
-                  'assets/image/full_logo.png',
-                  width: 110,
-                  height: 90,
-                ),
-              ),
 
-              // Navigation Items
-              Expanded(
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  child: Column(
-                    children: [
-                      _buildSidebarItem(0, Icons.dashboard_outlined, context.tr('dashboard', fallback: 'Dashboard')),
-                      _buildSidebarItem(1, Icons.biotech_outlined, context.tr('pending_tests', fallback: 'Pending Tests')),
-                      _buildSidebarItem(2, Icons.fact_check_outlined, context.tr('completed_tests', fallback: 'Completed Tests')),
-                      _buildSidebarItem(4, Icons.settings_suggest_outlined, context.tr('resources', fallback: 'Resources')),
-                      _buildSidebarItem(5, Icons.receipt_long_outlined, context.tr('billing', fallback: 'Lab Billing')),
-                      _buildSidebarItem(3, Icons.person_outline, context.tr('profile', fallback: 'My Profile')),
-                    ],
-                  ),
-                ),
-              ),
+    return ValueListenableBuilder<bool>(
+      valueListenable: SidebarState.isCollapsed,
+      builder: (context, isSidebarCollapsed, _) {
+        final effectiveCollapsed = isMobile ? false : isSidebarCollapsed;
+        final width = isMobile ? double.infinity : (effectiveCollapsed ? 76.0 : 275.0);
 
-              // Footer Profile
-              Container(
-                decoration: BoxDecoration(
-                  border: Border(
-                    top: BorderSide(color: AppTheme.getBorderColor(context), width: 1),
-                  ),
-                ),
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                child: user == null
-                    ? const SizedBox.shrink()
-                    : Row(
-                        children: [
-                          Expanded(
-                            child: InkWell(
-                              onTap: () => UserProfileDialog.show(context, user),
-                              borderRadius: BorderRadius.circular(8),
-                              child: Row(
-                                children: [
-                                  CircleAvatar(
-                                    backgroundColor: AppTheme.primaryColor,
-                                    radius: 18,
-                                    child: Text(
-                                      user.fullname.isNotEmpty ? user.fullname[0].toUpperCase() : '?',
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 14,
+        return Consumer<AuthProvider>(
+          builder: (context, auth, _) {
+            final user = auth.user;
+            return AnimatedContainer(
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeInOut,
+              width: width,
+              margin: isMobile
+                  ? EdgeInsets.zero
+                  : (effectiveCollapsed
+                      ? const EdgeInsets.fromLTRB(10, 16, 6, 16)
+                      : const EdgeInsets.fromLTRB(16, 16, 8, 16)),
+              decoration: BoxDecoration(
+                color: AppTheme.getCardColor(context),
+                borderRadius: isMobile ? BorderRadius.zero : BorderRadius.circular(20),
+                border: isMobile ? null : Border.all(color: AppTheme.getBorderColor(context)),
+                boxShadow: isDark || isMobile
+                    ? []
+                    : [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.06),
+                          blurRadius: 12,
+                          offset: const Offset(0, 4),
+                        ),
+                      ],
+              ),
+              child: ClipRect(
+                child: LayoutBuilder(
+                  builder: (context, sidebarBox) {
+                    final showCollapsed = effectiveCollapsed || (!isMobile && sidebarBox.maxWidth < 210);
+
+                    return Column(
+                      children: [
+                        // Logo Section
+                        Container(
+                          constraints: const BoxConstraints(minHeight: 70),
+                          padding: EdgeInsets.symmetric(
+                            horizontal: showCollapsed ? 8 : 16,
+                            vertical: 12,
+                          ),
+                          decoration: BoxDecoration(
+                            border: Border(
+                              bottom: BorderSide(
+                                color: AppTheme.getBorderColor(context).withOpacity(0.6),
+                                width: 1,
+                              ),
+                            ),
+                          ),
+                          child: showCollapsed
+                              ? Center(
+                                  child: Tooltip(
+                                    message: 'Expand Sidebar',
+                                    preferBelow: false,
+                                    child: InkWell(
+                                      onTap: () => SidebarState.setCollapsed(false),
+                                      borderRadius: BorderRadius.circular(10),
+                                      child: Padding(
+                                        padding: const EdgeInsets.all(4.0),
+                                        child: Image.asset(
+                                          'assets/image/sriPonniLogo.png',
+                                          width: 34,
+                                          height: 34,
+                                          errorBuilder: (_, __, ___) => const Icon(
+                                            Icons.local_hospital_rounded,
+                                            color: AppTheme.primaryColor,
+                                            size: 28,
+                                          ),
+                                        ),
                                       ),
                                     ),
                                   ),
-                                  const SizedBox(width: 10),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          user.fullname,
-                                          style: TextStyle(
-                                            fontWeight: FontWeight.w600,
-                                            fontSize: 13,
-                                            color: AppTheme.getTextPrimaryColor(context),
-                                          ),
-                                          overflow: TextOverflow.ellipsis,
+                                )
+                              : Row(
+                                  children: [
+                                    Expanded(
+                                      child: Center(
+                                        child: Image.asset(
+                                          'assets/image/full_logo.png',
+                                          width: 110,
+                                          height: 80,
+                                          fit: BoxFit.contain,
                                         ),
-                                        Text(
-                                          context.translateRole(user.role),
-                                          style: TextStyle(
-                                            fontSize: 11,
+                                      ),
+                                    ),
+                                    if (!isMobile)
+                                      IconButton(
+                                        onPressed: () => SidebarState.setCollapsed(true),
+                                        tooltip: 'Collapse Sidebar',
+                                        icon: Icon(
+                                          Icons.chevron_left_rounded,
+                                          color: AppTheme.getTextSecondaryColor(context),
+                                          size: 20,
+                                        ),
+                                        visualDensity: VisualDensity.compact,
+                                        constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                                        padding: EdgeInsets.zero,
+                                      ),
+                                  ],
+                                ),
+                        ),
+
+                        // Navigation Items (Scrollable Area)
+                        Expanded(
+                          child: ListView(
+                            physics: const ClampingScrollPhysics(),
+                            padding: EdgeInsets.symmetric(
+                              horizontal: showCollapsed ? 4 : 0,
+                              vertical: 10,
+                            ),
+                            children: [
+                              _buildSidebarItem(0, Icons.dashboard_outlined, context.tr('dashboard', fallback: 'Dashboard'), isMobile: isMobile, isCollapsed: showCollapsed),
+                              if (user?.hasPermission('lab_test_processing') ?? false) ...[
+                                _buildSidebarItem(1, Icons.biotech_outlined, context.tr('pending_tests', fallback: 'Pending Tests'), isMobile: isMobile, isCollapsed: showCollapsed),
+                                _buildSidebarItem(2, Icons.fact_check_outlined, context.tr('completed_tests', fallback: 'Completed Tests'), isMobile: isMobile, isCollapsed: showCollapsed),
+                                _buildSidebarItem(4, Icons.settings_suggest_outlined, context.tr('resources', fallback: 'Resources'), isMobile: isMobile, isCollapsed: showCollapsed),
+                              ],
+                              if (user?.hasPermission('lab_billing') ?? false)
+                                _buildSidebarItem(5, Icons.receipt_long_outlined, context.tr('billing', fallback: 'Lab Billing'), isMobile: isMobile, isCollapsed: showCollapsed),
+                              _buildSidebarItem(3, Icons.person_outline, context.tr('profile', fallback: 'My Profile'), isMobile: isMobile, isCollapsed: showCollapsed),
+                            ],
+                          ),
+                        ),
+
+                        // Expand button when collapsed on desktop
+                        if (showCollapsed && !isMobile)
+                          Container(
+                            padding: const EdgeInsets.symmetric(vertical: 4),
+                            decoration: BoxDecoration(
+                              border: Border(
+                                top: BorderSide(
+                                  color: AppTheme.getBorderColor(context).withOpacity(0.6),
+                                ),
+                              ),
+                            ),
+                            child: Center(
+                              child: IconButton(
+                                onPressed: () => SidebarState.setCollapsed(false),
+                                tooltip: 'Expand Sidebar',
+                                visualDensity: VisualDensity.compact,
+                                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                                icon: const Icon(
+                                  Icons.chevron_right_rounded,
+                                  color: AppTheme.primaryColor,
+                                ),
+                              ),
+                            ),
+                          ),
+
+                        // Footer Profile
+                        Container(
+                          decoration: BoxDecoration(
+                            border: Border(
+                              top: BorderSide(color: AppTheme.getBorderColor(context), width: 1),
+                            ),
+                          ),
+                          padding: EdgeInsets.symmetric(
+                            horizontal: showCollapsed ? 8 : 16,
+                            vertical: 14,
+                          ),
+                          child: user == null
+                              ? const SizedBox.shrink()
+                              : showCollapsed
+                                  ? Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Tooltip(
+                                          message: '${user.fullname} (${context.translateRole(user.role)})',
+                                          preferBelow: false,
+                                          child: InkWell(
+                                            onTap: () => UserProfileDialog.show(context, user),
+                                            borderRadius: BorderRadius.circular(18),
+                                            child: CircleAvatar(
+                                              backgroundColor: AppTheme.primaryColor,
+                                              radius: 18,
+                                              child: Text(
+                                                user.fullname.isNotEmpty ? user.fullname[0].toUpperCase() : '?',
+                                                style: const TextStyle(
+                                                  color: Colors.white,
+                                                  fontWeight: FontWeight.bold,
+                                                  fontSize: 14,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                        const SizedBox(height: 8),
+                                        Tooltip(
+                                          message: 'Logout',
+                                          preferBelow: false,
+                                          child: IconButton(
+                                            icon: Icon(
+                                              Icons.logout,
+                                              size: 18,
+                                              color: AppTheme.getTextSecondaryColor(context),
+                                            ),
+                                            visualDensity: VisualDensity.compact,
+                                            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                                            padding: EdgeInsets.zero,
+                                            onPressed: () => LogoutHelper.showLogoutConfirmation(
+                                              context,
+                                              auth,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    )
+                                  : Row(
+                                      children: [
+                                        Expanded(
+                                          child: InkWell(
+                                            onTap: () => UserProfileDialog.show(context, user),
+                                            borderRadius: BorderRadius.circular(8),
+                                            child: Row(
+                                              children: [
+                                                CircleAvatar(
+                                                  backgroundColor: AppTheme.primaryColor,
+                                                  radius: 18,
+                                                  child: Text(
+                                                    user.fullname.isNotEmpty ? user.fullname[0].toUpperCase() : '?',
+                                                    style: const TextStyle(
+                                                      color: Colors.white,
+                                                      fontWeight: FontWeight.bold,
+                                                      fontSize: 14,
+                                                    ),
+                                                  ),
+                                                ),
+                                                const SizedBox(width: 10),
+                                                Expanded(
+                                                  child: Column(
+                                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                                    children: [
+                                                      Text(
+                                                        user.fullname,
+                                                        style: TextStyle(
+                                                          fontWeight: FontWeight.w600,
+                                                          fontSize: 13,
+                                                          color: AppTheme.getTextPrimaryColor(context),
+                                                        ),
+                                                        overflow: TextOverflow.ellipsis,
+                                                      ),
+                                                      Text(
+                                                        context.translateRole(user.role),
+                                                        style: TextStyle(
+                                                          fontSize: 11,
+                                                          color: AppTheme.getTextSecondaryColor(context),
+                                                          fontWeight: FontWeight.w600,
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                        IconButton(
+                                          icon: Icon(
+                                            Icons.logout,
+                                            size: 18,
                                             color: AppTheme.getTextSecondaryColor(context),
-                                            fontWeight: FontWeight.w600,
+                                          ),
+                                          onPressed: () => LogoutHelper.showLogoutConfirmation(
+                                            context,
+                                            auth,
                                           ),
                                         ),
                                       ],
                                     ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                          IconButton(
-                            icon: Icon(
-                              Icons.logout,
-                              size: 18,
-                              color: AppTheme.getTextSecondaryColor(context),
-                            ),
-                            onPressed: () =>
-                                LogoutHelper.showLogoutConfirmation(
-                                  context,
-                                  auth,
-                                ),
-                          ),
-                        ],
-                      ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
               ),
-            ],
-          ),
+            );
+          },
         );
       },
     );
   }
 
-  Widget _buildSidebarItem(int index, IconData icon, String label) {
+  Widget _buildSidebarItem(int index, IconData icon, String label, {bool isMobile = false, bool isCollapsed = false}) {
     bool isSelected = _selectedIndex == index;
     return Tooltip(
       message: label,
@@ -379,34 +540,48 @@ class _LabDashboardScreenState extends State<LabDashboardScreen> {
         borderRadius: BorderRadius.circular(10),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 180),
-          margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+          margin: EdgeInsets.symmetric(
+            horizontal: isCollapsed ? 8 : 12,
+            vertical: isCollapsed ? 3 : 2,
+          ),
+          padding: EdgeInsets.symmetric(
+            horizontal: isCollapsed ? 0 : 14,
+            vertical: isCollapsed ? 10 : 11,
+          ),
           decoration: BoxDecoration(
             color: isSelected ? AppTheme.primaryColor : Colors.transparent,
             borderRadius: BorderRadius.circular(10),
           ),
-          child: Row(
-            children: [
-              Icon(
-                icon,
-                color: isSelected ? Colors.white : AppTheme.getTextSecondaryColor(context),
-                size: 20,
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Text(
-                  label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: isSelected ? Colors.white : AppTheme.getTextPrimaryColor(context),
-                    fontWeight: FontWeight.bold,
-                    fontSize: 13.5,
+          child: isCollapsed
+              ? Center(
+                  child: Icon(
+                    icon,
+                    color: isSelected ? Colors.white : AppTheme.getTextSecondaryColor(context),
+                    size: 20,
                   ),
+                )
+              : Row(
+                  children: [
+                    Icon(
+                      icon,
+                      color: isSelected ? Colors.white : AppTheme.getTextSecondaryColor(context),
+                      size: 20,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: isSelected ? Colors.white : AppTheme.getTextPrimaryColor(context),
+                          fontWeight: FontWeight.bold,
+                          fontSize: 13.5,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-              ),
-            ],
-          ),
         ),
       ),
     );
@@ -510,19 +685,32 @@ class _LabDashboardScreenState extends State<LabDashboardScreen> {
   }
 
   Widget _buildMainContent(bool isMobile) {
+    final user = Provider.of<AuthProvider>(context, listen: false).user;
     switch (_selectedIndex) {
       case 0:
         return _buildDashboardView(isMobile);
       case 1:
-        return _buildRequestsView(isMobile, showPendingOnly: true);
+        if (user?.hasPermission('lab_test_processing') ?? false) {
+          return _buildRequestsView(isMobile, showPendingOnly: true);
+        }
+        return const AccessDeniedWidget();
       case 2:
-        return _buildRequestsView(isMobile, showPendingOnly: false);
+        if (user?.hasPermission('lab_test_processing') ?? false) {
+          return _buildRequestsView(isMobile, showPendingOnly: false);
+        }
+        return const AccessDeniedWidget();
       case 3:
         return _buildProfileView(isMobile);
       case 4:
-        return _buildResourcesView(isMobile);
+        if (user?.hasPermission('lab_test_processing') ?? false) {
+          return _buildResourcesView(isMobile);
+        }
+        return const AccessDeniedWidget();
       case 5:
-        return const BillingManagementView();
+        if (user?.hasPermission('lab_billing') ?? false) {
+          return const BillingManagementView();
+        }
+        return const AccessDeniedWidget();
       default:
         return _buildDashboardView(isMobile);
     }
@@ -1490,7 +1678,9 @@ class _LabDashboardScreenState extends State<LabDashboardScreen> {
                     children: [
                       const Icon(Icons.warning, size: 10, color: Colors.red),
                       const SizedBox(width: 4),
-                      Text('Delayed: ${req['delay_reason']}', style: const TextStyle(fontSize: 10, color: Colors.red, fontWeight: FontWeight.w600)),
+                      Flexible(
+                        child: Text('Delayed: ${req['delay_reason']}', style: const TextStyle(fontSize: 10, color: Colors.red, fontWeight: FontWeight.w600)),
+                      ),
                     ],
                   ),
                 ),
@@ -1832,26 +2022,30 @@ class _LabDashboardScreenState extends State<LabDashboardScreen> {
             const Divider(height: 1, color: AppTheme.borderColor),
             const SizedBox(height: 16),
             Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                Row(
-                  children: [
-                    Container(
-                      width: 4,
-                      height: 16,
-                      decoration: BoxDecoration(
-                        color: AppTheme.primaryColor,
-                        borderRadius: BorderRadius.circular(2),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    const Text(
-                      'TEST PARAMETER MEASUREMENTS',
-                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: AppTheme.primaryColor, letterSpacing: 0.3),
-                    ),
-                  ],
+                Container(
+                  width: 4,
+                  height: 16,
+                  decoration: BoxDecoration(
+                    color: AppTheme.primaryColor,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
                 ),
-                if (resultsList.isNotEmpty)
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'TEST PARAMETER MEASUREMENTS',
+                    style: TextStyle(
+                      fontSize: isMobile ? 12 : 13,
+                      fontWeight: FontWeight.bold,
+                      color: AppTheme.primaryColor,
+                      letterSpacing: 0.3,
+                    ),
+                  ),
+                ),
+                if (resultsList.isNotEmpty) ...[
+                  const SizedBox(width: 8),
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                     decoration: BoxDecoration(
@@ -1863,6 +2057,7 @@ class _LabDashboardScreenState extends State<LabDashboardScreen> {
                       style: const TextStyle(fontSize: 11, color: AppTheme.primaryColor, fontWeight: FontWeight.bold),
                     ),
                   ),
+                ],
               ],
             ),
             const SizedBox(height: 12),
@@ -1876,6 +2071,71 @@ class _LabDashboardScreenState extends State<LabDashboardScreen> {
                 ),
                 child: const Text('No parameters registered for this test', style: TextStyle(fontStyle: FontStyle.italic, fontSize: 13, color: AppTheme.textSecondaryColor)),
               )
+            else if (isMobile)
+              Container(
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: AppTheme.borderColor),
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: resultsList.asMap().entries.map((entry) {
+                    final idx = entry.key;
+                    final res = entry.value;
+                    final isEven = idx % 2 == 0;
+                    final paramName = res['parameter']?.toString() ?? '';
+                    final valStr = res['value']?.toString() ?? '';
+                    final unitStr = (res['unit']?.toString() ?? '').trim();
+                    final refStr = (res['reference_range']?.toString() ?? '').trim();
+                    final fullValue = unitStr.isNotEmpty ? '$valStr $unitStr' : valStr;
+
+                    return Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: isEven ? Colors.white : const Color(0xFFFBFDFF),
+                        border: idx < resultsList.length - 1
+                            ? const Border(bottom: BorderSide(color: Color(0xFFF1F5F9), width: 1))
+                            : null,
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            paramName,
+                            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimaryColor),
+                          ),
+                          const SizedBox(height: 6),
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: AppTheme.primaryColor.withOpacity(0.07),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              fullValue,
+                              style: const TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.bold,
+                                color: AppTheme.primaryColor,
+                              ),
+                            ),
+                          ),
+                          if (refStr.isNotEmpty) ...[
+                            const SizedBox(height: 5),
+                            Text(
+                              'Reference Range: $refStr',
+                              style: const TextStyle(fontSize: 11.5, color: AppTheme.textSecondaryColor),
+                            ),
+                          ],
+                        ],
+                      ),
+                    );
+                  }).toList(),
+                ),
+              )
             else
               Container(
                 decoration: BoxDecoration(
@@ -1885,41 +2145,39 @@ class _LabDashboardScreenState extends State<LabDashboardScreen> {
                 ),
                 clipBehavior: Clip.antiAlias,
                 child: Table(
-                  columnWidths: isMobile
-                      ? const {
-                          0: FlexColumnWidth(2.2),
-                          1: FlexColumnWidth(1.6),
-                          2: FlexColumnWidth(1.0),
-                          3: FlexColumnWidth(1.6),
-                        }
-                      : const {
-                          0: FlexColumnWidth(2.2),
-                          1: FlexColumnWidth(1.5),
-                          2: FlexColumnWidth(1.0),
-                          3: FlexColumnWidth(1.8),
-                        },
+                  columnWidths: const {
+                    0: FlexColumnWidth(2.2),
+                    1: FlexColumnWidth(1.5),
+                    2: FlexColumnWidth(1.0),
+                    3: FlexColumnWidth(1.8),
+                  },
                   children: [
                     TableRow(
-                      decoration: const BoxDecoration(
-                        color: Color(0xFFF8FAFC),
-                        border: Border(bottom: BorderSide(color: AppTheme.borderColor)),
+                      decoration: BoxDecoration(
+                        color: AppTheme.getTableHeadingRowColor(context),
+                        border: Border(bottom: BorderSide(color: AppTheme.getBorderColor(context))),
                       ),
                       children: [
-                        Padding(
-                          padding: EdgeInsets.symmetric(horizontal: isMobile ? 8.0 : 12.0, vertical: 10.0),
-                          child: const Text('Parameter', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: AppTheme.textPrimaryColor)),
+                        AppTheme.tableRowHeaderCell(
+                          context: context,
+                          label: 'Parameter',
+                          icon: Icons.science_outlined,
                         ),
-                        Padding(
-                          padding: EdgeInsets.symmetric(horizontal: isMobile ? 8.0 : 12.0, vertical: 10.0),
-                          child: const Text('Observed Value', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: AppTheme.textPrimaryColor)),
+                        AppTheme.tableRowHeaderCell(
+                          context: context,
+                          label: 'Observed Value',
+                          icon: Icons.biotech_outlined,
                         ),
-                        Padding(
-                          padding: EdgeInsets.symmetric(horizontal: isMobile ? 6.0 : 10.0, vertical: 10.0),
-                          child: const Text('Unit', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: AppTheme.textPrimaryColor)),
+                        AppTheme.tableRowHeaderCell(
+                          context: context,
+                          label: 'Unit',
+                          icon: Icons.straighten_outlined,
+                          padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 10.0),
                         ),
-                        Padding(
-                          padding: EdgeInsets.symmetric(horizontal: isMobile ? 8.0 : 12.0, vertical: 10.0),
-                          child: const Text('Reference Range', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: AppTheme.textPrimaryColor)),
+                        AppTheme.tableRowHeaderCell(
+                          context: context,
+                          label: 'Reference Range',
+                          icon: Icons.rule_outlined,
                         ),
                       ],
                     ),
@@ -1934,14 +2192,14 @@ class _LabDashboardScreenState extends State<LabDashboardScreen> {
                         ),
                         children: [
                           Padding(
-                            padding: EdgeInsets.symmetric(horizontal: isMobile ? 8.0 : 12.0, vertical: 10.0),
+                            padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 10.0),
                             child: Text(
                               res['parameter'] ?? '',
                               style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
                             ),
                           ),
                           Padding(
-                            padding: EdgeInsets.symmetric(horizontal: isMobile ? 8.0 : 12.0, vertical: 8.0),
+                            padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 8.0),
                             child: Container(
                               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                               decoration: BoxDecoration(
@@ -1959,14 +2217,14 @@ class _LabDashboardScreenState extends State<LabDashboardScreen> {
                             ),
                           ),
                           Padding(
-                            padding: EdgeInsets.symmetric(horizontal: isMobile ? 6.0 : 10.0, vertical: 10.0),
+                            padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 10.0),
                             child: Text(
                               res['unit'] ?? '',
                               style: const TextStyle(fontSize: 12, color: AppTheme.textSecondaryColor, fontWeight: FontWeight.w500),
                             ),
                           ),
                           Padding(
-                            padding: EdgeInsets.symmetric(horizontal: isMobile ? 8.0 : 12.0, vertical: 10.0),
+                            padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 10.0),
                             child: Text(
                               res['reference_range'] ?? '',
                               style: const TextStyle(fontSize: 12, color: AppTheme.textSecondaryColor),
@@ -2140,11 +2398,19 @@ class _LabDashboardScreenState extends State<LabDashboardScreen> {
         
     final controller = TextEditingController(text: currentMinutes > 0 ? currentMinutes.toString() : '');
     final formKey = GlobalKey<FormState>();
+    final initialDuration = controller.text;
 
     showDialog(
       context: context,
+      barrierDismissible: false,
       builder: (ctx) {
-        return AlertDialog(
+        return PopScope(
+          canPop: false,
+          onPopInvokedWithResult: (didPop, result) {
+            if (didPop) return;
+            DiscardDialogHelper.handleCancelOrDismiss(ctx, isDirty: controller.text.trim() != initialDuration.trim());
+          },
+          child: AlertDialog(
           backgroundColor: Colors.white,
           surfaceTintColor: Colors.white,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -2225,7 +2491,7 @@ class _LabDashboardScreenState extends State<LabDashboardScreen> {
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.pop(ctx),
+              onPressed: () => DiscardDialogHelper.handleCancelOrDismiss(ctx, isDirty: controller.text.trim() != initialDuration.trim()),
               child: const Text('Cancel', style: TextStyle(color: AppTheme.textSecondaryColor)),
             ),
             ElevatedButton(
@@ -2266,6 +2532,7 @@ class _LabDashboardScreenState extends State<LabDashboardScreen> {
               child: const Text('Save Changes', style: TextStyle(color: Colors.white)),
             ),
           ],
+          ),
         );
       },
     );
@@ -2399,11 +2666,19 @@ class _LabDashboardScreenState extends State<LabDashboardScreen> {
   void _showDelayDialog(Map<String, dynamic> req) {
     final controller = TextEditingController(text: req['delay_reason'] ?? '');
     final formKey = GlobalKey<FormState>();
+    final initialReason = controller.text;
 
     showDialog(
       context: context,
+      barrierDismissible: false,
       builder: (ctx) {
-        return AlertDialog(
+        return PopScope(
+          canPop: false,
+          onPopInvokedWithResult: (didPop, result) {
+            if (didPop) return;
+            DiscardDialogHelper.handleCancelOrDismiss(ctx, isDirty: controller.text.trim() != initialReason.trim());
+          },
+          child: AlertDialog(
           backgroundColor: Colors.white,
           surfaceTintColor: Colors.white,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -2445,7 +2720,7 @@ class _LabDashboardScreenState extends State<LabDashboardScreen> {
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.pop(ctx),
+              onPressed: () => DiscardDialogHelper.handleCancelOrDismiss(ctx, isDirty: controller.text.trim() != initialReason.trim()),
               child: const Text('Cancel', style: TextStyle(color: AppTheme.textSecondaryColor)),
             ),
             ElevatedButton(
@@ -2476,6 +2751,7 @@ class _LabDashboardScreenState extends State<LabDashboardScreen> {
               child: const Text('Save Delay', style: TextStyle(color: Colors.white)),
             ),
           ],
+          ),
         );
       },
     );
@@ -2639,6 +2915,14 @@ class _LabDashboardScreenState extends State<LabDashboardScreen> {
     final machineName = _getMachineName(testName);
     int machineFetchCount = 0;
     bool isMachineFetching = false;
+    final initialResultsSnapshot = jsonEncode(initialFields);
+    final initialRemarks = remarksController.text;
+    final initialAttachment = attachmentController.text;
+    bool isDirty() {
+      return remarksController.text != initialRemarks ||
+          attachmentController.text != initialAttachment ||
+          jsonEncode(initialFields) != initialResultsSnapshot;
+    }
 
     showDialog(
       context: context,
@@ -2649,7 +2933,13 @@ class _LabDashboardScreenState extends State<LabDashboardScreen> {
             final screenWidth = MediaQuery.of(context).size.width;
             final isMobile = screenWidth < 700;
 
-            return AlertDialog(
+            return PopScope(
+              canPop: false,
+              onPopInvokedWithResult: (didPop, result) {
+                if (didPop) return;
+                DiscardDialogHelper.handleCancelOrDismiss(ctx, isDirty: isDirty());
+              },
+              child: AlertDialog(
               backgroundColor: Colors.white,
               surfaceTintColor: Colors.white,
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -3052,7 +3342,7 @@ class _LabDashboardScreenState extends State<LabDashboardScreen> {
               ),
               actions: [
                 OutlinedButton(
-                  onPressed: () => Navigator.pop(ctx),
+                  onPressed: () => DiscardDialogHelper.handleCancelOrDismiss(ctx, isDirty: isDirty()),
                   style: AppTheme.cancelButton,
                   child: const Text('Cancel'),
                 ),
@@ -3099,11 +3389,12 @@ class _LabDashboardScreenState extends State<LabDashboardScreen> {
                   child: const Text('Submit Lab Report', style: TextStyle(color: Colors.white)),
                 ),
               ],
-            );
-          },
-        );
-      },
-    );
+            ),
+          );
+        },
+      );
+    },
+  );
   }
 
   bool _isNumericField(String parameterName) {
@@ -3266,10 +3557,13 @@ class _LabDashboardScreenState extends State<LabDashboardScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Icon(Icons.people_outline, color: AppTheme.primaryColor, size: 20),
               SizedBox(width: 8),
-              Text('Technicians Shift Status', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+              Expanded(
+                child: Text('Technicians Shift Status', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+              ),
             ],
           ),
           const Divider(height: 24, color: AppTheme.borderColor),
@@ -3301,6 +3595,7 @@ class _LabDashboardScreenState extends State<LabDashboardScreen> {
                             ],
                           ),
                         ),
+                        const SizedBox(width: 8),
                         DropdownButtonHideUnderline(
                           child: Container(
                             height: 32,
@@ -3394,10 +3689,13 @@ class _LabDashboardScreenState extends State<LabDashboardScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Icon(Icons.settings_outlined, color: AppTheme.primaryColor, size: 20),
               SizedBox(width: 8),
-              Text('Analyzer Equipment Operating Status', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+              Expanded(
+                child: Text('Analyzer Equipment Operating Status', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+              ),
             ],
           ),
           const Divider(height: 24, color: AppTheme.borderColor),
@@ -3429,6 +3727,7 @@ class _LabDashboardScreenState extends State<LabDashboardScreen> {
                             ],
                           ),
                         ),
+                        const SizedBox(width: 8),
                         DropdownButtonHideUnderline(
                           child: Container(
                             height: 32,

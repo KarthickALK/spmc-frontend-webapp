@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
+export 'form_scroll_helper.dart';
+export 'discard_dialog_helper.dart';
 
 class AppTheme {
   // ── Colors ────────────────────────────────────────────────────────────────
@@ -88,6 +90,9 @@ class AppTheme {
       case 'Scheduled':
       case 'In-Progress':
         return primaryLight;
+      case 'Checked In':
+      case 'Checked-in':
+        return const Color(0xFFCCFBF1);
       case 'Waiting':
         return const Color(0xFFFEF3C7);
       case 'In Consultation':
@@ -111,6 +116,9 @@ class AppTheme {
       case 'Scheduled':
       case 'In-Progress':
         return primaryColor;
+      case 'Checked In':
+      case 'Checked-in':
+        return const Color(0xFF0F766E);
       case 'Waiting':
         return const Color(0xFF92400E);
       case 'In Consultation':
@@ -150,10 +158,10 @@ class AppTheme {
   static TextTheme get textTheme => const TextTheme(
     displayLarge: TextStyle(
       fontFamily: fontFamily,
-      fontSize: 28,
+      fontSize: 26,
       fontWeight: FontWeight.bold,
       color: textPrimaryColor,
-      letterSpacing: -0.5,
+      letterSpacing: -0.4,
     ),
     headlineMedium: TextStyle(
       fontFamily: fontFamily,
@@ -192,6 +200,28 @@ class AppTheme {
       color: textPrimaryColor,
     ),
   );
+
+  /// Standardized Page Title typography style across the entire HMS application.
+  static TextStyle pageTitleStyle(BuildContext context, {bool isMobile = false}) {
+    return TextStyle(
+      fontFamily: fontFamily,
+      fontSize: isMobile ? 22 : 26,
+      fontWeight: FontWeight.bold,
+      color: getTextPrimaryColor(context),
+      letterSpacing: -0.4,
+    );
+  }
+
+  /// Standardized Page Subtitle typography style across the entire HMS application.
+  static TextStyle pageSubtitleStyle(BuildContext context, {bool isMobile = false}) {
+    return TextStyle(
+      fontFamily: fontFamily,
+      fontSize: isMobile ? 12.5 : 13.5,
+      fontWeight: FontWeight.w400,
+      color: getTextSecondaryColor(context),
+      height: 1.3,
+    );
+  }
 
   // ── Button Styles ─────────────────────────────────────────────────────────
   static ButtonStyle baseButtonStyle({
@@ -381,6 +411,150 @@ class AppTheme {
     );
   }
 
+  // ── Table Heading & Header Common Styles ──────────────────────────────────
+  static Color getTableHeadingRowColor(BuildContext context) {
+    return isDark(context) ? darkSurfaceColor : const Color(0xFFEDF2F7);
+  }
+
+  static Color getTableHeadingTextColor(BuildContext context) {
+    return isDark(context) ? darkTextSecondaryColor : const Color(0xFF475569);
+  }
+
+  static Color getTableHeadingIconColor(BuildContext context) {
+    return isDark(context) ? const Color(0xFF94A3B8) : const Color(0xFF64748B);
+  }
+
+  static const double tableHeadingIconSize = 14.0;
+
+  static TextStyle tableHeadingTextStyle(
+    BuildContext context, {
+    TextAlign textAlign = TextAlign.start,
+    double fontSize = 12.0,
+    FontWeight fontWeight = FontWeight.w600,
+  }) {
+    return TextStyle(
+      fontFamily: fontFamily,
+      fontSize: fontSize,
+      fontWeight: fontWeight,
+      color: getTableHeadingTextColor(context),
+      letterSpacing: 0.5,
+    );
+  }
+
+  static BoxDecoration tableHeaderDecoration(
+    BuildContext context, {
+    double borderRadius = 12.0,
+    bool showBottomBorder = true,
+  }) {
+    final dark = isDark(context);
+    return BoxDecoration(
+      color: getTableHeadingRowColor(context),
+      borderRadius: BorderRadius.only(
+        topLeft: Radius.circular(borderRadius),
+        topRight: Radius.circular(borderRadius),
+      ),
+      border: showBottomBorder
+          ? Border(
+              bottom: BorderSide(color: getBorderColor(context)),
+            )
+          : null,
+    );
+  }
+
+  static Widget tableHeaderCell({
+    required BuildContext context,
+    required String label,
+    IconData? icon,
+    int flex = 1,
+    TextAlign textAlign = TextAlign.start,
+    EdgeInsetsGeometry? padding,
+    MainAxisAlignment mainAxisAlignment = MainAxisAlignment.start,
+  }) {
+    final textWidget = Text(
+      label,
+      textAlign: textAlign,
+      style: tableHeadingTextStyle(context, textAlign: textAlign),
+      overflow: TextOverflow.ellipsis,
+    );
+
+    Widget content;
+    if (icon != null) {
+      content = Row(
+        mainAxisSize: MainAxisSize.min,
+        mainAxisAlignment: mainAxisAlignment,
+        children: [
+          Icon(
+            icon,
+            size: tableHeadingIconSize,
+            color: getTableHeadingIconColor(context),
+          ),
+          const SizedBox(width: 6),
+          Flexible(child: textWidget),
+        ],
+      );
+    } else {
+      content = textWidget;
+    }
+
+    if (padding != null) {
+      content = Padding(padding: padding, child: content);
+    }
+
+    return flex > 0 ? Expanded(flex: flex, child: content) : content;
+  }
+
+  static Widget tableRowHeaderCell({
+    required BuildContext context,
+    required String label,
+    IconData? icon,
+    TextAlign textAlign = TextAlign.start,
+    EdgeInsetsGeometry padding = const EdgeInsets.symmetric(horizontal: 12.0, vertical: 10.0),
+    MainAxisAlignment mainAxisAlignment = MainAxisAlignment.start,
+  }) {
+    return tableHeaderCell(
+      context: context,
+      label: label,
+      icon: icon,
+      flex: 0,
+      textAlign: textAlign,
+      padding: padding,
+      mainAxisAlignment: mainAxisAlignment,
+    );
+  }
+
+  static DataColumn dataColumnHeader({
+    required BuildContext context,
+    required String label,
+    IconData? icon,
+    TextAlign textAlign = TextAlign.start,
+  }) {
+    final textWidget = Text(
+      label,
+      textAlign: textAlign,
+      style: tableHeadingTextStyle(context, textAlign: textAlign),
+    );
+
+    Widget labelWidget;
+    if (icon != null) {
+      labelWidget = Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            icon,
+            size: tableHeadingIconSize,
+            color: getTableHeadingIconColor(context),
+          ),
+          const SizedBox(width: 6),
+          textWidget,
+        ],
+      );
+    } else {
+      labelWidget = textWidget;
+    }
+
+    return DataColumn(label: labelWidget);
+  }
+
   // ── Theme Data ────────────────────────────────────────────────────────────
   static ThemeData get lightTheme {
     return ThemeData(
@@ -459,8 +633,17 @@ class AppTheme {
       ),
 
       dataTableTheme: DataTableThemeData(
-        headingRowColor: MaterialStateProperty.all(backgroundColor),
-        headingTextStyle: textTheme.labelLarge?.copyWith(color: secondaryColor),
+        headingRowColor: WidgetStateProperty.resolveWith(
+          (states) => const Color(0xFFEDF2F7),
+        ),
+        headingTextStyle: const TextStyle(
+          fontFamily: fontFamily,
+          fontSize: 12.0,
+          fontWeight: FontWeight.w600,
+          color: Color(0xFF475569),
+          letterSpacing: 0.5,
+        ),
+        headingRowHeight: 52,
         dataTextStyle: textTheme.bodyMedium,
         dividerThickness: 1,
         horizontalMargin: paddingMedium,
@@ -621,8 +804,17 @@ class AppTheme {
         space: 1,
       ),
       dataTableTheme: DataTableThemeData(
-        headingRowColor: WidgetStateProperty.all(darkCardColor),
-        headingTextStyle: darkText.labelLarge?.copyWith(color: secondaryColor),
+        headingRowColor: WidgetStateProperty.resolveWith(
+          (states) => darkSurfaceColor,
+        ),
+        headingTextStyle: const TextStyle(
+          fontFamily: fontFamily,
+          fontSize: 12.0,
+          fontWeight: FontWeight.w600,
+          color: darkTextSecondaryColor,
+          letterSpacing: 0.5,
+        ),
+        headingRowHeight: 52,
         dataTextStyle: darkText.bodyMedium,
         dividerThickness: 1,
         horizontalMargin: paddingMedium,

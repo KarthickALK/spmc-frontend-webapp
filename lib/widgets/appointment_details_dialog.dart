@@ -5,6 +5,9 @@ import '../utils/app_theme.dart';
 import '../utils/date_formatter.dart';
 import '../models/appointment_model.dart';
 import '../controllers/appointment_controller.dart';
+import 'package:provider/provider.dart';
+import '../providers/auth_provider.dart';
+import 'billing_receipt_dialog.dart';
 
 class AppointmentDetailsDialog extends StatefulWidget {
   final AppointmentModel appointment;
@@ -42,6 +45,15 @@ class _AppointmentDetailsDialogState extends State<AppointmentDetailsDialog> {
     final todayMidnight = DateTime(now.year, now.month, now.day);
     final apptMidnight = DateTime(apptDate.year, apptDate.month, apptDate.day);
     return apptMidnight.isAfter(todayMidnight);
+  }
+
+  bool get _isDirty {
+    if (!_editingVitalsMode) return false;
+    return _systolicCtrl.text.trim() != (widget.appointment.bloodPressureSystolic?.toString() ?? '') ||
+        _diastolicCtrl.text.trim() != (widget.appointment.bloodPressureDiastolic?.toString() ?? '') ||
+        _sugarCtrl.text.trim() != (widget.appointment.sugarLevel?.toString() ?? '') ||
+        _tempCtrl.text.trim() != (widget.appointment.temperature?.toString() ?? '') ||
+        _complaintsCtrl.text.trim() != (widget.appointment.reasonForVisit ?? '');
   }
 
   @override
@@ -120,7 +132,7 @@ class _AppointmentDetailsDialogState extends State<AppointmentDetailsDialog> {
       return;
     }
 
-    if (!_formKey.currentState!.validate()) return;
+    if (!_formKey.validateAndScroll()) return;
 
     setState(() => _isSaving = true);
     try {
@@ -134,7 +146,9 @@ class _AppointmentDetailsDialogState extends State<AppointmentDetailsDialog> {
 
       await _appointmentController.updateVitals(widget.appointment.id!, vitalsData);
 
-      if (widget.appointment.status == 'Confirmed' || widget.appointment.status == 'Checked-in') {
+      if (widget.appointment.status == 'Confirmed' ||
+          widget.appointment.status == 'Checked-in' ||
+          widget.appointment.status == 'Checked In') {
         await _appointmentController.updateStatus(widget.appointment.id!, 'Waiting');
       }
 
@@ -166,17 +180,30 @@ class _AppointmentDetailsDialogState extends State<AppointmentDetailsDialog> {
   Widget build(BuildContext context) {
     final bool isMobile = MediaQuery.of(context).size.width < 768;
 
-    return Dialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      elevation: 24,
-      backgroundColor: Colors.white,
-      child: Container(
-        width: isMobile ? double.infinity : 640,
-        constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.85),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (bool didPop, dynamic result) async {
+        if (didPop) return;
+        DiscardDialogHelper.handleCancelOrDismiss(context, isDirty: _isDirty);
+      },
+      child: Dialog(
+        insetPadding: EdgeInsets.symmetric(
+          horizontal: isMobile ? 16 : 40,
+          vertical: 20,
+        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        elevation: 24,
+        backgroundColor: Colors.white,
+        child: Container(
+          width: double.infinity,
+          constraints: BoxConstraints(
+            maxWidth: 640,
+            maxHeight: MediaQuery.of(context).size.height * 0.88,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
             // Dialog Header
             _buildHeader(isMobile),
             const Divider(height: 1),
@@ -184,7 +211,7 @@ class _AppointmentDetailsDialogState extends State<AppointmentDetailsDialog> {
             // Scrollable Body
             Expanded(
               child: SingleChildScrollView(
-                padding: const EdgeInsets.all(24),
+                padding: EdgeInsets.all(isMobile ? 16 : 24),
                 child: Form(
                   key: _formKey,
                   child: Column(
@@ -272,12 +299,16 @@ class _AppointmentDetailsDialogState extends State<AppointmentDetailsDialog> {
           ],
         ),
       ),
-    );
-  }
+    ),
+  );
+}
 
   Widget _buildHeader(bool isMobile) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 18),
+      padding: EdgeInsets.symmetric(
+        horizontal: isMobile ? 16 : 24,
+        vertical: isMobile ? 14 : 18,
+      ),
       child: Row(
         children: [
           Container(
@@ -314,7 +345,7 @@ class _AppointmentDetailsDialogState extends State<AppointmentDetailsDialog> {
             ),
           ),
           IconButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => DiscardDialogHelper.handleCancelOrDismiss(context, isDirty: _isDirty),
             icon: const Icon(Icons.close, size: 20, color: Color(0xFF94A3B8)),
             splashRadius: 20,
           ),
@@ -330,16 +361,18 @@ class _AppointmentDetailsDialogState extends State<AppointmentDetailsDialog> {
         children: [
           Icon(icon, size: 18, color: const Color(0xFF64748B)),
           const SizedBox(width: 8),
-          Text(
-            title,
-            style: const TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.bold,
-              color: Color(0xFF334155),
+          Expanded(
+            child: Text(
+              title,
+              style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.bold,
+                color: Color(0xFF334155),
+              ),
             ),
           ),
           if (trailing != null) ...[
-            const Spacer(),
+            const SizedBox(width: 8),
             trailing,
           ]
         ],
@@ -453,7 +486,10 @@ class _AppointmentDetailsDialogState extends State<AppointmentDetailsDialog> {
                       style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF64748B)),
                     ),
                     const SizedBox(height: 4),
-                    Row(
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 4,
+                      crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
                         Container(
                           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -471,8 +507,7 @@ class _AppointmentDetailsDialogState extends State<AppointmentDetailsDialog> {
                             ),
                           ),
                         ),
-                        if (widget.appointment.isRescheduled) ...[
-                          const SizedBox(width: 6),
+                        if (widget.appointment.isRescheduled)
                           Container(
                             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                             decoration: BoxDecoration(
@@ -489,10 +524,34 @@ class _AppointmentDetailsDialogState extends State<AppointmentDetailsDialog> {
                               ),
                             ),
                           ),
-                        ]
                       ],
                     ),
                   ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: _buildInfoItem(
+                  'Consultation Fee',
+                  widget.appointment.isFollowup
+                      ? '₹0.00 (Free Follow-up)'
+                      : '₹${(widget.appointment.consultationFee ?? 300).toStringAsFixed(2)}',
+                  icon: Icons.payments_outlined,
+                ),
+              ),
+              Expanded(
+                child: _buildInfoItem(
+                  'OP Billing & Status',
+                  widget.appointment.opInvoiceNumber != null
+                      ? '${widget.appointment.opInvoiceNumber} • ${widget.appointment.billingPaymentStatus ?? "Unpaid"}'
+                      : (widget.appointment.isFollowup
+                          ? 'Settled (Free Follow-up)'
+                          : (widget.appointment.billingPaymentStatus ?? 'Pending Payment')),
+                  icon: Icons.receipt_long_outlined,
                 ),
               ),
             ],
@@ -1119,37 +1178,43 @@ class _AppointmentDetailsDialogState extends State<AppointmentDetailsDialog> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Row(
-                      children: [
-                        Text(
-                          status,
-                          style: TextStyle(
-                            fontWeight: isCurrent ? FontWeight.bold : (isCompleted ? FontWeight.w600 : FontWeight.normal),
-                            fontSize: 12,
-                            color: isCurrent 
-                                ? AppTheme.textPrimaryColor 
-                                : (isCompleted ? const Color(0xFF475569) : const Color(0xFF94A3B8)),
-                          ),
-                        ),
-                        const Spacer(),
-                        if (isCompleted)
+                    SizedBox(
+                      width: double.infinity,
+                      child: Wrap(
+                        alignment: WrapAlignment.spaceBetween,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        spacing: 8,
+                        runSpacing: 2,
+                        children: [
                           Text(
-                            '$timeStr, $dateStr',
-                            style: const TextStyle(
-                              fontSize: 10,
-                              color: Color(0xFF64748B),
-                            ),
-                          )
-                        else
-                          const Text(
-                            'Pending',
+                            status,
                             style: TextStyle(
-                              fontSize: 10,
-                              color: Color(0xFF94A3B8),
-                              fontStyle: FontStyle.italic,
+                              fontWeight: isCurrent ? FontWeight.bold : (isCompleted ? FontWeight.w600 : FontWeight.normal),
+                              fontSize: 12,
+                              color: isCurrent
+                                  ? AppTheme.textPrimaryColor
+                                  : (isCompleted ? const Color(0xFF475569) : const Color(0xFF94A3B8)),
                             ),
                           ),
-                      ],
+                          if (isCompleted)
+                            Text(
+                              '$timeStr, $dateStr',
+                              style: const TextStyle(
+                                fontSize: 10.5,
+                                color: Color(0xFF64748B),
+                              ),
+                            )
+                          else
+                            const Text(
+                              'Pending',
+                              style: TextStyle(
+                                fontSize: 10.5,
+                                color: Color(0xFF94A3B8),
+                                fontStyle: FontStyle.italic,
+                              ),
+                            ),
+                        ],
+                      ),
                     ),
                     const SizedBox(height: 14),
                   ],
@@ -1192,12 +1257,14 @@ class _AppointmentDetailsDialogState extends State<AppointmentDetailsDialog> {
             children: [
               const Icon(Icons.error_outline, color: Colors.red, size: 18),
               const SizedBox(width: 8),
-              Text(
-                'Cancellation Details',
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 13,
-                  color: Colors.red.shade900,
+              Expanded(
+                child: Text(
+                  'Cancellation Details',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13,
+                    color: Colors.red.shade900,
+                  ),
                 ),
               ),
             ],
@@ -1296,13 +1363,47 @@ class _AppointmentDetailsDialogState extends State<AppointmentDetailsDialog> {
   }
 
   Widget _buildActions() {
+    final isMobile = MediaQuery.of(context).size.width < 768;
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+      padding: EdgeInsets.symmetric(horizontal: isMobile ? 16 : 24, vertical: 14),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.end,
         children: [
+          if (Provider.of<AuthProvider>(context, listen: false).user?.role.toLowerCase() != 'nurse' &&
+              widget.appointment.id != null && widget.appointment.status != 'Cancelled') ...[
+            ElevatedButton.icon(
+              onPressed: () {
+                BillingReceiptDialog.show(
+                  context,
+                  appointmentId: widget.appointment.id,
+                  onPaymentSuccess: widget.onRefresh,
+                );
+              },
+              icon: Icon(
+                (widget.appointment.billingPaymentStatus == 'Paid' || widget.appointment.consultationFee == 0)
+                    ? Icons.receipt_long
+                    : Icons.payment,
+                size: 16,
+              ),
+              label: Text(
+                (widget.appointment.billingPaymentStatus == 'Paid' || widget.appointment.consultationFee == 0)
+                    ? 'Receipt'
+                    : 'Collect Fee',
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: (widget.appointment.billingPaymentStatus == 'Paid' || widget.appointment.consultationFee == 0)
+                    ? const Color(0xFF16A34A)
+                    : const Color(0xFFD97706),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+              ),
+            ),
+            const SizedBox(width: 12),
+          ],
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => DiscardDialogHelper.handleCancelOrDismiss(context, isDirty: _isDirty),
             style: TextButton.styleFrom(
               padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),

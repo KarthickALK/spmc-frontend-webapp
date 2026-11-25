@@ -1,3 +1,7 @@
+import 'department_management_view.dart';
+import 'operation_theatres_master_screen.dart';
+import 'nurse_shift_master_screen.dart';
+import 'regional_address_master_screen.dart';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -11,10 +15,7 @@ import '../models/user_model.dart';
 import '../widgets/custom_dropdown_search.dart';
 import '../providers/auth_provider.dart';
 import '../controllers/admin_controller.dart';
-import '../widgets/nurse_widgets.dart' hide PatientModel;
 import '../widgets/admin_widgets.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
 import 'dart:async';
 import '../widgets/rbac_management.dart';
 import '../widgets/access_denied_widget.dart';
@@ -40,14 +41,22 @@ import '../models/home_visit_model.dart';
 import 'home_visit_list_view.dart';
 import 'home_visit_execution_screen.dart';
 import '../services/api_service.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
 import '../config/api_config.dart';
 import '../config/admin_nav_config.dart';
 import 'ipd_beds_catalog_view.dart';
+import '../widgets/admin_billing_services_catalog_view.dart';
+import '../widgets/admin_lab_tests_catalog_view.dart';
+import '../widgets/admin_specializations_catalog_view.dart';
+import '../widgets/admin_db_initialization_view.dart';
 import '../utils/app_localizations.dart';
 import '../widgets/app_top_bar_actions.dart';
 import '../providers/language_provider.dart';
 import '../utils/tamil_transliteration_helper.dart';
+import '../controllers/notification_controller.dart';
+import 'package:url_launcher/url_launcher.dart';
+import '../widgets/admin_global_search_overlay.dart';
+import '../utils/unsaved_changes_helper.dart';
+import '../utils/sidebar_state.dart';
 
 class AdminDashboardScreen extends StatefulWidget {
   final int initialIndex;
@@ -87,6 +96,8 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   int _selectedStaffOverviewDayIndex = (DateTime.now().weekday - 1).clamp(0, 6);
   List<UserModel> _allStaffList = [];
   bool _isLoadingDashboardStats = false;
+  List<Map<String, dynamic>> _adminNotifications = [];
+  bool _isLoadingNotifications = false;
 
   Future<List<UserModel>>? _staffFuture;
   Future<Map<String, dynamic>>? _rbacFuture;
@@ -118,6 +129,127 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   String? _selectedAllocWard;
   DateTime? _selectedAllocDate;
 
+  // History & Allocation Logs Filter State
+  String _allocLogNurseFilter = 'All';
+  DateTimeRange? _allocLogDateRangeFilter;
+  DateTime? _allocLogWeekFilter;
+  String _allocLogWeekPreset = 'All';
+  String _allocLogSearchQuery = '';
+  final TextEditingController _allocLogSearchCtrl = TextEditingController();
+
+  List<Map<String, dynamic>> get _filteredAllocations {
+    return _allocations.where((alloc) {
+      // 1. Nurse filter
+      if (_allocLogNurseFilter != 'All') {
+        final nurseName = alloc['nurse_name']?.toString() ?? '';
+        if (nurseName != _allocLogNurseFilter) return false;
+      }
+
+      // 2. Date Range filter
+      if (_allocLogDateRangeFilter != null) {
+        if (alloc['allocation_date'] == null) return false;
+        final allocDate = DateTime.tryParse(alloc['allocation_date'].toString());
+        if (allocDate == null) return false;
+        final allocDay = DateTime(allocDate.year, allocDate.month, allocDate.day);
+        final startDay = DateTime(
+          _allocLogDateRangeFilter!.start.year,
+          _allocLogDateRangeFilter!.start.month,
+          _allocLogDateRangeFilter!.start.day,
+        );
+        final endDay = DateTime(
+          _allocLogDateRangeFilter!.end.year,
+          _allocLogDateRangeFilter!.end.month,
+          _allocLogDateRangeFilter!.end.day,
+        );
+        if (allocDay.isBefore(startDay) || allocDay.isAfter(endDay)) {
+          return false;
+        }
+      }
+
+      // 3. Week filter
+      if (_allocLogWeekFilter != null) {
+        if (alloc['allocation_date'] == null) return false;
+        final allocDate = DateTime.tryParse(alloc['allocation_date'].toString());
+        if (allocDate == null) return false;
+        final allocDay = DateTime(allocDate.year, allocDate.month, allocDate.day);
+        final weekStart = _allocLogWeekFilter!;
+        final weekEnd = weekStart.add(const Duration(days: 6));
+        if (allocDay.isBefore(weekStart) || allocDay.isAfter(weekEnd)) {
+          return false;
+        }
+      }
+
+      // 4. Search query
+      if (_allocLogSearchQuery.trim().isNotEmpty) {
+        final q = _allocLogSearchQuery.trim().toLowerCase();
+        final nurseName = (alloc['nurse_name'] ?? '').toString().toLowerCase();
+        final ward = (alloc['ward_type'] ?? '').toString().toLowerCase();
+        final shift = (alloc['shift_name'] ?? '').toString().toLowerCase();
+        if (!nurseName.contains(q) && !ward.contains(q) && !shift.contains(q)) {
+          return false;
+        }
+      }
+
+      return true;
+    }).toList()
+      ..sort((a, b) {
+        // Deterministic sort: allocation_date DESC, start_time ASC, id ASC
+        final dateA = a['allocation_date']?.toString() ?? '';
+        final dateB = b['allocation_date']?.toString() ?? '';
+        final dateCmp = dateB.compareTo(dateA);
+        if (dateCmp != 0) return dateCmp;
+
+        final timeA = a['start_time']?.toString() ?? '';
+        final timeB = b['start_time']?.toString() ?? '';
+        final timeCmp = timeA.compareTo(timeB);
+        if (timeCmp != 0) return timeCmp;
+
+        final idA = (a['id'] is int) ? a['id'] as int : int.tryParse(a['id']?.toString() ?? '0') ?? 0;
+        final idB = (b['id'] is int) ? b['id'] as int : int.tryParse(b['id']?.toString() ?? '0') ?? 0;
+        return idA.compareTo(idB);
+      });
+  }
+
+  bool get _hasActiveAllocLogFilters {
+    return _allocLogNurseFilter != 'All' ||
+        _allocLogDateRangeFilter != null ||
+        _allocLogWeekPreset != 'All' ||
+        _allocLogSearchQuery.trim().isNotEmpty;
+  }
+
+  void _applyWeekPreset(String preset) {
+    setState(() {
+      _allocLogWeekPreset = preset;
+      final now = DateTime.now();
+      final today = DateTime(now.year, now.month, now.day);
+      final monday = today.subtract(Duration(days: today.weekday - 1));
+
+      if (preset == 'This Week') {
+        _allocLogWeekFilter = monday;
+        _allocLogDateRangeFilter = null;
+      } else if (preset == 'Last Week') {
+        _allocLogWeekFilter = monday.subtract(const Duration(days: 7));
+        _allocLogDateRangeFilter = null;
+      } else if (preset == 'Next Week') {
+        _allocLogWeekFilter = monday.add(const Duration(days: 7));
+        _allocLogDateRangeFilter = null;
+      } else {
+        _allocLogWeekFilter = null;
+      }
+    });
+  }
+
+  void _resetAllocLogFilters() {
+    setState(() {
+      _allocLogNurseFilter = 'All';
+      _allocLogDateRangeFilter = null;
+      _allocLogWeekFilter = null;
+      _allocLogWeekPreset = 'All';
+      _allocLogSearchQuery = '';
+      _allocLogSearchCtrl.clear();
+    });
+  }
+
   int _shiftManagementSubTab = 0; // 0 = Daily Allocations, 1 = Weekly Rosters
   List<Map<String, dynamic>> _rosters = [];
   DateTime _selectedRosterWeekStart = DateTime(
@@ -125,6 +257,21 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     DateTime.now().month,
     DateTime.now().day,
   ).subtract(Duration(days: DateTime.now().weekday - 1));
+
+  DateTime get _currentWeekStart {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    return today.subtract(Duration(days: today.weekday - 1));
+  }
+
+  bool get _isPastRosterWeek {
+    final selectedStart = DateTime(
+      _selectedRosterWeekStart.year,
+      _selectedRosterWeekStart.month,
+      _selectedRosterWeekStart.day,
+    );
+    return selectedStart.isBefore(_currentWeekStart);
+  }
 
   Future<void> _loadRosterData() async {
     final dateStr = DateFormat('yyyy-MM-dd').format(_selectedRosterWeekStart);
@@ -155,10 +302,18 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
       }
     }
 
+    // Preserve the assigned nurse for this weekly slot even if individual dates are deleted/modified
+    Map<String, dynamic>? dominantRoster;
+    int maxDays = 0;
     for (final entry in nurseAllocations.entries) {
-      if (entry.value.length == 7) {
-        return entry.value.first;
+      if (entry.value.length > maxDays) {
+        maxDays = entry.value.length;
+        dominantRoster = entry.value.first;
       }
+    }
+
+    if (dominantRoster != null && maxDays > 0) {
+      return dominantRoster;
     }
 
     return <String, dynamic>{};
@@ -169,8 +324,40 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     int shiftId,
     String wardType,
   ) async {
+    if (_isPastRosterWeek) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Cannot allocate shifts for past weeks. Past rosters are locked in read-only mode.'),
+          backgroundColor: AppTheme.dangerColor,
+        ),
+      );
+      return;
+    }
     final dateStr = DateFormat('yyyy-MM-dd').format(_selectedRosterWeekStart);
-    if (mounted) setState(() => _isLoadingShifts = true);
+
+    // Optimistic UI update: instantly reflect the assigned nurse in the slot (0ms delay)
+    final nurse = _nurses.firstWhere(
+      (n) => n.id == nurseId,
+      orElse: () => UserModel(id: nurseId, rawFullname: 'Nurse', email: '', role: 'Nurse'),
+    );
+    final shift = _shifts.firstWhere((s) => s['id'] == shiftId, orElse: () => {});
+
+    final optimisticEntries = <Map<String, dynamic>>[];
+    for (int day = 0; day < 7; day++) {
+      optimisticEntries.add({
+        'id': -1,
+        'nurse_id': nurseId,
+        'nurse_name': nurse.fullname,
+        'shift_id': shiftId,
+        'shift_name': shift['name'] ?? '',
+        'ward_type': wardType,
+        'allocation_date': dateStr,
+      });
+    }
+    setState(() {
+      _rosters.addAll(optimisticEntries);
+    });
+
     try {
       await _shiftCtrl.saveRosterEntry(nurseId, shiftId, wardType, dateStr);
       if (mounted) {
@@ -181,25 +368,43 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
           ),
         );
       }
-      await _loadShiftData(); // reload allocations and rosters
+      // Partial background update without triggering full page reload
+      await _loadRosterData();
+      _shiftCtrl.fetchAllocations().then((allocs) {
+        if (mounted) {
+          setState(() => _allocations = List<Map<String, dynamic>>.from(allocs));
+        }
+      });
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error saving roster: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _isLoadingShifts = false);
-      }
+      await _loadRosterData();
+      rethrow;
     }
   }
 
   Future<void> _deleteRosterEntry(int id) async {
-    if (mounted) setState(() => _isLoadingShifts = true);
+    if (_isPastRosterWeek) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Cannot remove shifts from past weeks. Past rosters are locked in read-only mode.'),
+          backgroundColor: AppTheme.dangerColor,
+        ),
+      );
+      return;
+    }
+
+    // Optimistic removal: instantly remove from _rosters in UI (0ms delay)
+    final target = _rosters.firstWhere((r) => r['id'] == id, orElse: () => {});
+    final targetWard = target['ward_type'];
+    final targetShiftId = target['shift_id'];
+
+    if (targetWard != null && targetShiftId != null) {
+      setState(() {
+        _rosters.removeWhere(
+          (r) => r['ward_type'] == targetWard && r['shift_id'] == targetShiftId,
+        );
+      });
+    }
+
     try {
       await _shiftCtrl.deleteRosterEntry(id);
       if (mounted) {
@@ -210,19 +415,23 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
           ),
         );
       }
-      await _loadShiftData(); // reload allocations and rosters
+      // Partial background update without triggering full page reload
+      await _loadRosterData();
+      _shiftCtrl.fetchAllocations().then((allocs) {
+        if (mounted) {
+          setState(() => _allocations = List<Map<String, dynamic>>.from(allocs));
+        }
+      });
     } catch (e) {
+      await _loadRosterData();
+      final cleanMsg = e.toString().replaceAll('Exception: ', '').trim();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Error deleting roster: $e'),
-            backgroundColor: Colors.red,
+            content: Text(cleanMsg.isNotEmpty ? cleanMsg : 'Error deleting roster.'),
+            backgroundColor: AppTheme.dangerColor,
           ),
         );
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _isLoadingShifts = false);
       }
     }
   }
@@ -236,6 +445,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     _staffSearchController.dispose();
     _medSearchController.dispose();
     _hvSearchController.dispose();
+    _allocLogSearchCtrl.dispose();
     super.dispose();
   }
 
@@ -247,14 +457,15 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     _patientToComplete = widget.existingPatient;
     _viewPatient = widget.viewPatient;
     _viewingStaffProfile = widget.viewingStaffProfile;
-    _selectedHomeVisitId = widget.selectedHomeVisitId;
-    _isCatalogMenuExpanded = widget.initialIndex == 13 ||
+    _isCatalogMenuExpanded = widget.initialIndex == 11 ||
+        widget.initialIndex == 13 ||
         widget.initialIndex == 14 ||
         widget.initialIndex == 15 ||
         widget.initialIndex == 16;
     _loadStaff();
     _loadRbacData();
     _fetchPatients();
+    _fetchAdminNotifications();
     if (_selectedIndex == 8) {
       _loadShiftData();
     }
@@ -270,9 +481,11 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
         widget.viewingStaffProfile != oldWidget.viewingStaffProfile ||
         widget.selectedHomeVisitId != oldWidget.selectedHomeVisitId) {
       _selectedIndex = widget.initialIndex;
-      if (widget.initialIndex == 13 ||
+      if (widget.initialIndex == 11 ||
+          widget.initialIndex == 13 ||
           widget.initialIndex == 14 ||
-          widget.initialIndex == 15) {
+          widget.initialIndex == 15 ||
+          widget.initialIndex == 16) {
         _isCatalogMenuExpanded = true;
       }
       _isRegisteringPatient = widget.isRegisteringPatient;
@@ -290,6 +503,20 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
         });
       }
     }
+  }
+
+  Future<bool> _confirmLeaveRegistration() async {
+    if (!UnsavedChangesHelper.hasUnsavedChanges) {
+      return true;
+    }
+    return DiscardDialogHelper.showDiscardWarningDialog(
+      context,
+      title: 'Discard Unsaved Changes?',
+      message:
+          'You are currently filling or editing the patient details. If you leave now, any unsaved inputs will be lost.\n\nDo you want to discard changes and leave?',
+      confirmText: 'Discard & Leave',
+      cancelText: 'Stay on Page',
+    );
   }
 
   Future<void> _loadShiftData() async {
@@ -349,10 +576,14 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
       barrierLabel: 'Search',
       barrierColor: Colors.black.withOpacity(0.4),
       transitionDuration: const Duration(milliseconds: 200),
-      pageBuilder: (context, anim1, anim2) {
-        return SearchOverlay(
-          patients: _dbPatients.map((p) => p.toJson()).toList(),
-          onNewPatient: () => context.go('${AppRoutes.adminDashboard}?tab=2'),
+      pageBuilder: (dialogCtx, anim1, anim2) {
+        return AdminGlobalSearchOverlay(
+          patients: _dbPatients,
+          staff: _allStaffList,
+          onNavigate: (route, index) {
+            Navigator.of(dialogCtx).pop();
+            context.go(route);
+          },
         );
       },
       transitionBuilder: (context, anim1, anim2, child) {
@@ -571,7 +802,9 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
 
   void _loadRbacData() {
     final user = Provider.of<AuthProvider>(context, listen: false).user;
-    if (user?.role == 'Super Admin') {
+    if (user?.role == 'Super Admin' ||
+        (user?.hasPermission('manage_rbac') ?? false) ||
+        (user?.hasPermission('manage_users') ?? false)) {
       setState(() {
         _rbacFuture = _adminController.fetchRbacData();
       });
@@ -705,13 +938,13 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
 
     return Scaffold(
       backgroundColor: AppTheme.getBackgroundColor(context),
-      drawer: isMobile ? Drawer(child: _buildSidebar(context)) : null,
+      drawer: isMobile ? Drawer(child: _buildSidebar(context, isMobile: true)) : null,
       body: SafeArea(
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             // Sidebar (only on desktop)
-            if (!isMobile) _buildSidebar(context),
+            if (!isMobile) _buildSidebar(context, isMobile: false),
 
             // Main Content Area
             Expanded(
@@ -786,32 +1019,38 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
         }
         return const AccessDeniedWidget();
       case 3:
-        if (user?.role == 'Super Admin' || user?.role == 'Admin') {
+        if (user?.hasPermission('manage_rbac') ?? false) {
           return RbacManagementWidget(isMobile: isMobile);
         }
         return const AccessDeniedWidget();
       case 4:
-        if (user?.role == 'Admin' || user?.role == 'Super Admin') {
+        if (user?.hasPermission('book_appointment') ?? false) {
           return const AdminAppointmentManagement();
         }
         return const AccessDeniedWidget();
       case 5:
-        if (user?.role == 'Admin' || user?.role == 'Super Admin') {
+        if ((user?.hasPermission('opd_assistance') ?? false) ||
+            (user?.hasPermission('conduct_consultations') ?? false)) {
           return OPDManagementScreen(isMobile: isMobile);
         }
         return const AccessDeniedWidget();
       case 6:
-        if (user?.role == 'Admin' || user?.role == 'Super Admin') {
+        if ((user?.hasPermission('ipd_doctor_rounds') ?? false) ||
+            (user?.hasPermission('ipd_nursing_care') ?? false) ||
+            (user?.hasPermission('ipd_admission_counter') ?? false)) {
           return IPDManagementScreen(isMobile: isMobile);
         }
         return const AccessDeniedWidget();
       case 7:
-        if (user?.role == 'Admin' || user?.role == 'Super Admin') {
+        if ((user?.hasPermission('ot_surgeries') ?? false) ||
+            (user?.hasPermission('ot_anaesthesia_pac') ?? false) ||
+            (user?.hasPermission('ot_who_checklist') ?? false) ||
+            (user?.hasPermission('ot_nursing_consumables') ?? false)) {
           return OTManagementScreen(isMobile: isMobile);
         }
         return const AccessDeniedWidget();
       case 8:
-        if (user?.role == 'Admin' || user?.role == 'Super Admin') {
+        if (user?.hasPermission('manage_shifts') ?? false) {
           return _buildShiftManagement(isMobile);
         }
         return const AccessDeniedWidget();
@@ -821,33 +1060,87 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
         }
         return const AccessDeniedWidget();
       case 10:
-        if (user?.role == 'Admin' || user?.role == 'Super Admin') {
-          return const BillingManagementView();
+        if ((user?.hasPermission('op_billing') ?? false) ||
+            (user?.hasPermission('ipd_billing_settlement') ?? false)) {
+          return Localizations.override(
+            context: context,
+            locale: const Locale('en'),
+            child: const BillingManagementView(),
+          );
         }
         return const AccessDeniedWidget();
       case 11:
-        if (user?.role == 'Admin' || user?.role == 'Super Admin') {
-          return InventoryManagementView(isMobile: isMobile);
+        if (user?.hasPermission('manage_catalogs') ?? false) {
+          return InventoryManagementView(
+            isMobile: isMobile,
+            isFoodStockOnly: true,
+          );
         }
         return const AccessDeniedWidget();
       case 12:
-        if (user?.role == 'Admin' || user?.role == 'Super Admin') {
+        if (user?.hasPermission('home_visit_care') ?? false) {
           return _buildAdminHomeVisitCare(isMobile);
         }
         return const AccessDeniedWidget();
       case 13:
-        if (user?.role == 'Admin' || user?.role == 'Super Admin') {
+        if (user?.hasPermission('manage_catalogs') ?? false) {
           return _buildMedicationCatalog(isMobile);
         }
         return const AccessDeniedWidget();
       case 14:
-        if (user?.role == 'Admin' || user?.role == 'Super Admin') {
+        if (user?.hasPermission('manage_catalogs') ?? false) {
           return _buildHomeVisitConsumablesCatalog(isMobile);
         }
         return const AccessDeniedWidget();
       case 15:
-        if (user?.role == 'Admin' || user?.role == 'Super Admin') {
+        if (user?.hasPermission('manage_catalogs') ?? false) {
           return _buildCarriedKitItemsCatalog(isMobile);
+        }
+        return const AccessDeniedWidget();
+      case 16:
+        if (user?.hasPermission('manage_catalogs') ?? false) {
+          return IpdBedsCatalogView(isMobile: isMobile);
+        }
+        return const AccessDeniedWidget();
+      case 17:
+        if (user?.hasPermission('manage_catalogs') ?? false) {
+          return AdminBillingServicesCatalogView(isMobile: isMobile);
+        }
+        return const AccessDeniedWidget();
+      case 18:
+        if (user?.hasPermission('manage_catalogs') ?? false) {
+          return AdminLabTestsCatalogView(isMobile: isMobile);
+        }
+        return const AccessDeniedWidget();
+      case 19:
+        if (user?.hasPermission('manage_catalogs') ?? false) {
+          return AdminSpecializationsCatalogView(isMobile: isMobile);
+        }
+        return const AccessDeniedWidget();
+      case 20:
+        if (user?.role == 'Super Admin' ||
+            (user?.hasPermission('manage_catalogs') ?? false)) {
+          return AdminDbInitializationView(isMobile: isMobile);
+        }
+        return const AccessDeniedWidget();
+      case 21:
+        if (user?.hasPermission('manage_catalogs') ?? false) {
+          return DepartmentManagementView(isMobile: isMobile);
+        }
+        return const AccessDeniedWidget();
+      case 22:
+        if (user?.role == 'Admin' || user?.role == 'Super Admin') {
+          return OperationTheatresMasterScreen(isMobile: isMobile);
+        }
+        return const AccessDeniedWidget();
+      case 23:
+        if (user?.role == 'Admin' || user?.role == 'Super Admin') {
+          return NurseShiftMasterScreen(isMobile: isMobile);
+        }
+        return const AccessDeniedWidget();
+      case 24:
+        if (user?.role == 'Admin' || user?.role == 'Super Admin') {
+          return RegionalAddressMasterScreen(isMobile: isMobile);
         }
         return const AccessDeniedWidget();
 
@@ -862,15 +1155,20 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
       children: [
         // Fixed Top Bar
         Container(
-          padding: const EdgeInsets.fromLTRB(24, 20, 24, 10),
+          padding: EdgeInsets.fromLTRB(
+            isMobile ? 16 : 24,
+            isMobile ? 14 : 20,
+            isMobile ? 16 : 24,
+            10,
+          ),
           color: Colors.transparent,
           child: _buildBannerTopBar(context, isMobile),
         ),
         // Scrollable Content
         Expanded(
           child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(
-              horizontal: 24.0,
+            padding: EdgeInsets.symmetric(
+              horizontal: isMobile ? 16.0 : 24.0,
               vertical: 16.0,
             ),
             child: Column(
@@ -885,7 +1183,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                   const SizedBox(height: 24),
                   _buildQuickActions(isMobile),
                   const SizedBox(height: 24),
-                  _buildAlertsSection(),
+                  _buildAlertsSection(true),
                 ] else
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -905,7 +1203,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                           children: [
                             _buildQuickActions(false),
                             const SizedBox(height: 24),
-                            _buildAlertsSection(),
+                            _buildAlertsSection(false),
                           ],
                         ),
                       ),
@@ -1621,23 +1919,19 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                       headingRowHeight: 56,
                       dataRowMinHeight: 60,
                       dataRowMaxHeight: 68,
-                      headingRowColor: WidgetStateProperty.all(
-                        const Color(0xFFEDF2F7),
+                      headingRowColor: WidgetStateProperty.resolveWith(
+                        (states) => AppTheme.getTableHeadingRowColor(context),
                       ),
-                      headingTextStyle: const TextStyle(
-                        fontWeight: FontWeight.w600,
-                        color: Color(0xFF64748B),
-                        fontSize: 13,
-                      ),
+                      headingTextStyle: AppTheme.tableHeadingTextStyle(context),
                       columns: [
-                        const DataColumn(label: Text('S.No')),
-                        const DataColumn(label: Text('Staff ID')),
-                        const DataColumn(label: Text('Name')),
-                        const DataColumn(label: Text('Role')),
+                        AppTheme.dataColumnHeader(context: context, label: 'S.No', icon: Icons.tag),
+                        AppTheme.dataColumnHeader(context: context, label: 'Staff ID', icon: Icons.badge_outlined),
+                        AppTheme.dataColumnHeader(context: context, label: 'Name', icon: Icons.person_outline),
+                        AppTheme.dataColumnHeader(context: context, label: 'Role', icon: Icons.work_outline),
                         if (_selectedRoleFilter == 'Doctor')
-                          const DataColumn(label: Text('Specialization')),
-                        const DataColumn(label: Text('Status')),
-                        const DataColumn(label: Text('Actions')),
+                          AppTheme.dataColumnHeader(context: context, label: 'Specialization', icon: Icons.medical_services_outlined),
+                        AppTheme.dataColumnHeader(context: context, label: 'Status', icon: Icons.verified_outlined),
+                        AppTheme.dataColumnHeader(context: context, label: 'Actions', icon: Icons.settings_outlined),
                       ],
                       rows: staff.asMap().entries.map((entry) {
                         final index = entry.key;
@@ -2188,154 +2482,373 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     );
   }
 
-  Widget _buildSidebar(BuildContext context) {
-    final user = Provider.of<AuthProvider>(context, listen: false).user;
+  Widget _buildSidebar(BuildContext context, {bool isMobile = false}) {
+    final user = Provider.of<AuthProvider>(context).user;
     final isDark = AppTheme.isDark(context);
 
-    return Container(
-      width: 275,
-      margin: const EdgeInsets.fromLTRB(16, 16, 8, 16),
-      decoration: BoxDecoration(
-        color: AppTheme.getCardColor(context),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: AppTheme.getBorderColor(context)),
-        boxShadow: isDark
-            ? []
-            : [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.06),
-                  blurRadius: 12,
-                  offset: const Offset(0, 4),
-                ),
-              ],
-      ),
-      child: Column(
-        children: [
-          // Logo Section
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-            child: Image.asset(
-              'assets/image/full_logo.png',
-              width: 110,
-              height: 90,
-            ),
-          ),
+    return ValueListenableBuilder<bool>(
+      valueListenable: SidebarState.isCollapsed,
+      builder: (context, isSidebarCollapsed, _) {
+        final effectiveCollapsed = isMobile ? false : isSidebarCollapsed;
+        final width = isMobile ? double.infinity : (effectiveCollapsed ? 76.0 : 275.0);
 
-          // Navigation Items (Scrollable driven by AdminNavConfig)
-          Expanded(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              child: Column(
-                children: [
-                  ...AdminNavConfig.getVisibleNavItems(user).map(
-                    (item) => _buildSidebarItem(
-                      item.index,
-                      item.icon,
-                      item.label,
+        return AnimatedContainer(
+          duration: const Duration(milliseconds: 220),
+          curve: Curves.easeInOut,
+          width: width,
+          margin: isMobile
+              ? EdgeInsets.zero
+              : (effectiveCollapsed
+                  ? const EdgeInsets.fromLTRB(10, 16, 6, 16)
+                  : const EdgeInsets.fromLTRB(16, 16, 8, 16)),
+          decoration: BoxDecoration(
+            color: AppTheme.getCardColor(context),
+            borderRadius: isMobile ? BorderRadius.zero : BorderRadius.circular(20),
+            border: isMobile ? null : Border.all(color: AppTheme.getBorderColor(context)),
+            boxShadow: isDark || isMobile
+                ? []
+                : [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.06),
+                      blurRadius: 12,
+                      offset: const Offset(0, 4),
                     ),
-                  ),
-                  if (AdminNavConfig.showMasterCatalog)
-                    _buildCatalogParentMenu(),
-                ],
-              ),
-            ),
+                  ],
           ),
+          child: ClipRect(
+            child: LayoutBuilder(
+              builder: (context, sidebarBox) {
+                final showCollapsed = effectiveCollapsed || (!isMobile && sidebarBox.maxWidth < 210);
 
-          // User Profile Footer
-          Container(
-            decoration: BoxDecoration(
-              border: Border(
-                top: BorderSide(color: AppTheme.getBorderColor(context), width: 1),
-              ),
-            ),
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-            child: user == null
-                ? const SizedBox.shrink()
-                : Consumer<AuthProvider>(
-                    builder: (context, auth, _) {
-                      final user = auth.user;
-                      if (user == null) return const SizedBox.shrink();
-                      return Row(
-                        children: [
-                          Expanded(
-                            child: InkWell(
-                              onTap: () =>
-                                  UserProfileDialog.show(context, user),
-                              borderRadius: BorderRadius.circular(8),
-                              child: Row(
-                                children: [
-                                  CircleAvatar(
-                                    backgroundColor: AppTheme.primaryColor,
-                                    radius: 18,
-                                    child: Text(
-                                      (user.rawFullname ?? user.fullname)
-                                              .isNotEmpty
-                                          ? (user.rawFullname ??
-                                                    user.fullname)[0]
-                                                .toUpperCase()
-                                          : '?',
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 14,
+                return Column(
+                  children: [
+                    // Brand Header
+                    Container(
+                      constraints: const BoxConstraints(minHeight: 70),
+                      padding: EdgeInsets.symmetric(
+                        horizontal: showCollapsed ? 8 : 16,
+                        vertical: 12,
+                      ),
+                      decoration: BoxDecoration(
+                        border: Border(
+                          bottom: BorderSide(
+                            color: AppTheme.getBorderColor(context).withOpacity(0.6),
+                            width: 1,
+                          ),
+                        ),
+                      ),
+                      child: showCollapsed
+                          ? Center(
+                              child: Tooltip(
+                                message: 'Expand Sidebar',
+                                preferBelow: false,
+                                child: InkWell(
+                                  onTap: () => SidebarState.setCollapsed(false),
+                                  borderRadius: BorderRadius.circular(10),
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(4.0),
+                                    child: Image.asset(
+                                      'assets/image/sriPonniLogo.png',
+                                      width: 34,
+                                      height: 34,
+                                      errorBuilder: (_, __, ___) => const Icon(
+                                        Icons.local_hospital_rounded,
+                                        color: AppTheme.primaryColor,
+                                        size: 28,
                                       ),
                                     ),
                                   ),
-                                  const SizedBox(width: 10),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          user.rawFullname ?? user.fullname,
-                                          style: TextStyle(
-                                            fontWeight: FontWeight.w600,
-                                            fontSize: 13,
-                                            color: AppTheme.getTextPrimaryColor(context),
-                                          ),
-                                          overflow: TextOverflow.ellipsis,
-                                        ),
-                                        Text(
-                                          context.translateRole(user.role),
-                                          style: TextStyle(
-                                            fontSize: 11,
-                                            color: AppTheme.getTextSecondaryColor(context),
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
-                                      ],
+                                ),
+                              ),
+                            )
+                          : Row(
+                              children: [
+                                Expanded(
+                                  child: Center(
+                                    child: Image.asset(
+                                      'assets/image/full_logo.png',
+                                      width: 110,
+                                      height: 80,
+                                      fit: BoxFit.contain,
                                     ),
                                   ),
-                                ],
-                              ),
-                            ),
-                          ),
-                          IconButton(
-                            icon: Icon(
-                              Icons.logout,
-                              size: 18,
-                              color: AppTheme.getTextSecondaryColor(context),
-                            ),
-                            onPressed: () =>
-                                LogoutHelper.showLogoutConfirmation(
-                                  context,
-                                  auth,
                                 ),
+                                if (!isMobile)
+                                  IconButton(
+                                    onPressed: () => SidebarState.setCollapsed(true),
+                                    tooltip: 'Collapse Sidebar',
+                                    icon: Icon(
+                                      Icons.chevron_left_rounded,
+                                      color: AppTheme.getTextSecondaryColor(context),
+                                      size: 20,
+                                    ),
+                                    visualDensity: VisualDensity.compact,
+                                    constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                                    padding: EdgeInsets.zero,
+                                  ),
+                              ],
+                            ),
+                    ),
+
+                    // Navigation Items (Scrollable driven by AdminNavConfig)
+                    Expanded(
+                      child: ListView(
+                        physics: const ClampingScrollPhysics(),
+                        padding: EdgeInsets.symmetric(
+                          horizontal: showCollapsed ? 4 : 0,
+                          vertical: 10,
+                        ),
+                        children: [
+                          ...AdminNavConfig.getVisibleNavItems(user).map(
+                            (item) => _buildSidebarItem(
+                              item.index,
+                              item.icon,
+                              item.label,
+                              isMobile: isMobile,
+                              isCollapsed: showCollapsed,
+                            ),
                           ),
+                          if (AdminNavConfig.showMasterCatalog &&
+                              (user?.hasPermission('manage_catalogs') ?? false))
+                            _buildCatalogParentMenu(
+                              isMobile: isMobile,
+                              isCollapsed: showCollapsed,
+                            ),
                         ],
-                      );
-                    },
-                  ),
+                      ),
+                    ),
+
+                    // Expand button when collapsed on desktop
+                    if (showCollapsed && !isMobile)
+                      Container(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        decoration: BoxDecoration(
+                          border: Border(
+                            top: BorderSide(
+                              color: AppTheme.getBorderColor(context).withOpacity(0.6),
+                            ),
+                          ),
+                        ),
+                        child: Center(
+                          child: IconButton(
+                            onPressed: () => SidebarState.setCollapsed(false),
+                            tooltip: 'Expand Sidebar',
+                            visualDensity: VisualDensity.compact,
+                            constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                            icon: const Icon(
+                              Icons.chevron_right_rounded,
+                              color: AppTheme.primaryColor,
+                            ),
+                          ),
+                        ),
+                      ),
+
+                    // User Profile Footer
+                    Container(
+                      decoration: BoxDecoration(
+                        border: Border(
+                          top: BorderSide(
+                            color: AppTheme.getBorderColor(context),
+                            width: 1,
+                          ),
+                        ),
+                      ),
+                      padding: EdgeInsets.symmetric(
+                        horizontal: showCollapsed ? 8 : 16,
+                        vertical: 14,
+                      ),
+                      child: user == null
+                          ? const SizedBox.shrink()
+                          : Consumer<AuthProvider>(
+                              builder: (context, auth, _) {
+                                final user = auth.user;
+                                if (user == null) return const SizedBox.shrink();
+
+                                if (showCollapsed) {
+                                  return Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Tooltip(
+                                        message: '${user.rawFullname ?? user.fullname} (${context.translateRole(user.role)})',
+                                        preferBelow: false,
+                                        child: InkWell(
+                                          onTap: () => UserProfileDialog.show(context, user),
+                                          borderRadius: BorderRadius.circular(18),
+                                          child: CircleAvatar(
+                                            backgroundColor: AppTheme.primaryColor,
+                                            radius: 18,
+                                            child: Text(
+                                              (user.rawFullname ?? user.fullname).isNotEmpty
+                                                  ? (user.rawFullname ?? user.fullname)[0].toUpperCase()
+                                                  : '?',
+                                              style: const TextStyle(
+                                                color: Colors.white,
+                                                fontWeight: FontWeight.bold,
+                                                fontSize: 14,
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      Tooltip(
+                                        message: 'Logout',
+                                        preferBelow: false,
+                                        child: IconButton(
+                                          icon: Icon(
+                                            Icons.logout,
+                                            size: 18,
+                                            color: AppTheme.getTextSecondaryColor(context),
+                                          ),
+                                          visualDensity: VisualDensity.compact,
+                                          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                                          padding: EdgeInsets.zero,
+                                          onPressed: () => LogoutHelper.showLogoutConfirmation(
+                                            context,
+                                            auth,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  );
+                                }
+
+                                return Row(
+                                  children: [
+                                    Expanded(
+                                      child: InkWell(
+                                        onTap: () =>
+                                            UserProfileDialog.show(context, user),
+                                        borderRadius: BorderRadius.circular(8),
+                                        child: Row(
+                                          children: [
+                                            CircleAvatar(
+                                              backgroundColor: AppTheme.primaryColor,
+                                              radius: 18,
+                                              child: Text(
+                                                (user.rawFullname ?? user.fullname)
+                                                        .isNotEmpty
+                                                    ? (user.rawFullname ??
+                                                              user.fullname)[0]
+                                                          .toUpperCase()
+                                                    : '?',
+                                                style: const TextStyle(
+                                                  color: Colors.white,
+                                                  fontWeight: FontWeight.bold,
+                                                  fontSize: 14,
+                                                ),
+                                              ),
+                                            ),
+                                            const SizedBox(width: 10),
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                children: [
+                                                  Text(
+                                                    user.rawFullname ?? user.fullname,
+                                                    style: TextStyle(
+                                                      fontWeight: FontWeight.w600,
+                                                      fontSize: 13,
+                                                      color: AppTheme.getTextPrimaryColor(context),
+                                                    ),
+                                                    overflow: TextOverflow.ellipsis,
+                                                  ),
+                                                  Text(
+                                                    context.translateRole(user.role),
+                                                    style: TextStyle(
+                                                      fontSize: 11,
+                                                      color: AppTheme.getTextSecondaryColor(context),
+                                                      fontWeight: FontWeight.w600,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                    IconButton(
+                                      icon: Icon(
+                                        Icons.logout,
+                                        size: 18,
+                                        color: AppTheme.getTextSecondaryColor(context),
+                                      ),
+                                      onPressed: () =>
+                                          LogoutHelper.showLogoutConfirmation(
+                                            context,
+                                            auth,
+                                          ),
+                                    ),
+                                  ],
+                                );
+                              },
+                            ),
+                    ),
+                  ],
+                );
+              },
+            ),
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 
-  Widget _buildCatalogParentMenu() {
+  Widget _buildCatalogParentMenu({bool isMobile = false, bool isCollapsed = false}) {
     bool isChildSelected =
-        _selectedIndex == 13 || _selectedIndex == 14 || _selectedIndex == 15;
+        _selectedIndex == 11 ||
+        _selectedIndex == 13 ||
+        _selectedIndex == 14 ||
+        _selectedIndex == 15 ||
+        _selectedIndex == 16;
+
+    if (isCollapsed) {
+      return Tooltip(
+        message: 'Master Catalog',
+        preferBelow: false,
+        child: InkWell(
+          onTap: () {
+            setState(() {
+              SidebarState.setCollapsed(false);
+              _isCatalogMenuExpanded = true;
+            });
+          },
+          borderRadius: BorderRadius.circular(10),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            padding: const EdgeInsets.symmetric(vertical: 10),
+            decoration: BoxDecoration(
+              color: isChildSelected
+                  ? AppTheme.primaryColor.withOpacity(0.08)
+                  : Colors.transparent,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Center(
+              child: Icon(
+                Icons.menu_book_outlined,
+                color: isChildSelected
+                    ? AppTheme.primaryColor
+                    : const Color(0xFF4A5568),
+                size: 20,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+        _selectedIndex == 16 ||
+        _selectedIndex == 17 ||
+        _selectedIndex == 18 ||
+        _selectedIndex == 19 ||
+        _selectedIndex == 20 ||
+        _selectedIndex == 21 ||
+        _selectedIndex == 22 ||
+        _selectedIndex == 23 ||
+        _selectedIndex == 24;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -2400,6 +2913,8 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                     subItem.icon,
                     subItem.label,
                     isSubItem: true,
+                    isMobile: isMobile,
+                    isCollapsed: false,
                   ),
                 )
                 .toList(),
@@ -2410,12 +2925,16 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
 
   String _translateAdminLabel(BuildContext context, String label, {bool isSubItem = false}) {
     if (isSubItem) {
-      // Master Catalog items must ALWAYS stay strictly in English
+      // Master Catalog items stay strictly in English
       return label;
     }
-    final lower = label.toLowerCase();
-    if (lower == 'home visit care' || lower.contains('home visit') || lower.contains('home care')) {
-      return context.tr('home_visit_care', fallback: 'வீட்டுப் பராமரிப்பு சேவை');
+    final lower = label.trim().toLowerCase();
+    if (lower.contains('billing') || lower.contains('invoice')) {
+      return label; // Billing & Invoices must ALWAYS stay strictly English
+    }
+    if (lower == 'home visit care' || lower.contains('home visit')) {
+      final isTamil = Provider.of<LanguageProvider>(context).isTamil;
+      return isTamil ? 'வீட்டுப் பராமரிப்பு சேவை' : label;
     }
     return label;
   }
@@ -2425,6 +2944,8 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     IconData icon,
     String label, {
     bool isSubItem = false,
+    bool isMobile = false,
+    bool isCollapsed = false,
   }) {
     bool isSelected =
         (_selectedIndex == index && !_isRegisteringPatient) ||
@@ -2452,10 +2973,28 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
         fontWeight: FontWeight.w500,
       ),
       child: InkWell(
-        onTap: () {
-        switch (index) {
-          case 0:
-            context.go(AppRoutes.adminDashboard);
+        onTap: () async {
+          if (isMobile) {
+            Navigator.of(context).pop();
+          }
+          if (UnsavedChangesHelper.hasUnsavedChanges) {
+            final shouldLeave = await _confirmLeaveRegistration();
+            if (!shouldLeave || !mounted) return;
+            UnsavedChangesHelper.clear();
+            setState(() {
+              _isRegisteringPatient = false;
+              _patientToComplete = null;
+            });
+          } else if (_isRegisteringPatient) {
+            setState(() {
+              _isRegisteringPatient = false;
+              _patientToComplete = null;
+            });
+          }
+          if (!mounted) return;
+          switch (index) {
+            case 0:
+              context.go(AppRoutes.adminDashboard);
             break;
           case 1:
             context.go(AppRoutes.adminUsers);
@@ -2502,6 +3041,33 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
           case 15:
             context.go(AppRoutes.adminCarriedKitItems);
             break;
+          case 16:
+            context.go(AppRoutes.adminIpdBeds);
+            break;
+          case 17:
+            context.go(AppRoutes.adminBillingServices);
+            break;
+          case 18:
+            context.go(AppRoutes.adminLabTestsMaster);
+            break;
+          case 19:
+            context.go(AppRoutes.adminSpecializations);
+            break;
+          case 20:
+            context.go(AppRoutes.adminDbInitialization);
+            break;
+          case 21:
+            context.go(AppRoutes.adminDepartments);
+            break;
+          case 22:
+            context.go(AppRoutes.adminOperationTheatres);
+            break;
+          case 23:
+            context.go(AppRoutes.adminNurseShifts);
+            break;
+          case 24:
+            context.go(AppRoutes.adminRegionalAddress);
+            break;
 
           default:
             context.go(AppRoutes.adminDashboard);
@@ -2512,41 +3078,49 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 180),
         margin: EdgeInsets.symmetric(
-          horizontal: 12,
-          vertical: isSubItem ? 1 : 2,
+          horizontal: isCollapsed ? 8 : (isSubItem ? 16 : 12),
+          vertical: isCollapsed ? 3 : (isSubItem ? 1 : 2),
         ),
         padding: EdgeInsets.symmetric(
-          horizontal: isSubItem ? 12 : 14,
-          vertical: isSubItem ? 9 : 11,
+          horizontal: isCollapsed ? 0 : (isSubItem ? 12 : 14),
+          vertical: isCollapsed ? 10 : (isSubItem ? 9 : 11),
         ),
         decoration: BoxDecoration(
           color: isSelected ? AppTheme.primaryColor : Colors.transparent,
           borderRadius: BorderRadius.circular(10),
         ),
-        child: Row(
-          children: [
-            if (isSubItem) const SizedBox(width: 12),
-            Icon(
-              icon,
-              color: isSelected ? Colors.white : AppTheme.getTextSecondaryColor(context),
-              size: isSubItem ? 18 : 20,
-            ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Text(
-                displayLabel,
-                style: TextStyle(
-                  color: isSelected ? Colors.white : AppTheme.getTextPrimaryColor(context),
-                  fontWeight: isSelected
-                      ? FontWeight.bold
-                      : (isSubItem ? FontWeight.w600 : FontWeight.bold),
-                  fontSize: isSubItem ? 13 : 14,
+        child: isCollapsed
+            ? Center(
+                child: Icon(
+                  icon,
+                  color: isSelected ? Colors.white : AppTheme.getTextSecondaryColor(context),
+                  size: 20,
                 ),
-                overflow: TextOverflow.ellipsis,
+              )
+            : Row(
+                children: [
+                  if (isSubItem) const SizedBox(width: 12),
+                  Icon(
+                    icon,
+                    color: isSelected ? Colors.white : AppTheme.getTextSecondaryColor(context),
+                    size: isSubItem ? 18 : 20,
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Text(
+                      displayLabel,
+                      style: TextStyle(
+                        color: isSelected ? Colors.white : AppTheme.getTextPrimaryColor(context),
+                        fontWeight: isSelected
+                            ? FontWeight.bold
+                            : (isSubItem ? FontWeight.w600 : FontWeight.bold),
+                        fontSize: isSubItem ? 13 : 14,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
               ),
-            ),
-          ],
-        ),
       ),
     ),
   );
@@ -2598,9 +3172,14 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      context.tr('search_anything', fallback: isMobile ? 'Search...' : 'Quick search...'),
+                      context.tr(
+                        'search_anything',
+                        fallback: isMobile
+                            ? 'Search modules, beds...'
+                            : 'Search modules, IPD beds, staff, patients (e.g. IPD Beds, Rice, Doctor)...',
+                      ),
                       style: TextStyle(
-                        fontSize: 14,
+                        fontSize: 13.5,
                         color: AppTheme.getTextSecondaryColor(context),
                       ),
                       overflow: TextOverflow.ellipsis,
@@ -2619,32 +3198,79 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              Icon(
-                Icons.notifications_none_outlined,
-                color: AppTheme.getTextPrimaryColor(context),
-                size: 22,
+              // Notification icon button with badge
+              Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  IconButton(
+                    icon: Icon(
+                      _adminNotifications.any((n) => n['is_read'] == false)
+                          ? Icons.notifications_active_outlined
+                          : Icons.notifications_none_outlined,
+                      color: _adminNotifications.any((n) => n['is_read'] == false)
+                          ? AppTheme.dangerColor
+                          : AppTheme.getTextPrimaryColor(context),
+                      size: 22,
+                    ),
+                    tooltip: context.tr('notifications', fallback: 'Notifications'),
+                    onPressed: _showAdminNotificationsDialog,
+                  ),
+                  if (_adminNotifications.any((n) => n['is_read'] == false))
+                    Positioned(
+                      right: 6,
+                      top: 6,
+                      child: Container(
+                        padding: const EdgeInsets.all(2),
+                        decoration: const BoxDecoration(
+                          color: AppTheme.dangerColor,
+                          shape: BoxShape.circle,
+                        ),
+                        constraints: const BoxConstraints(
+                          minWidth: 16,
+                          minHeight: 16,
+                        ),
+                        child: Text(
+                          '${_adminNotifications.where((n) => n['is_read'] == false).length}',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 9,
+                            fontWeight: FontWeight.bold,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    ),
+                ],
               ),
-              const SizedBox(width: 20),
-              Icon(
-                Icons.help_outline,
-                color: AppTheme.getTextPrimaryColor(context),
-                size: 22,
+              const SizedBox(width: 8),
+              // Help / Question Mark icon button
+              IconButton(
+                icon: Icon(
+                  Icons.help_outline,
+                  color: AppTheme.getTextPrimaryColor(context),
+                  size: 22,
+                ),
+                tooltip: context.tr('help', fallback: 'Help & Operational Guide'),
+                onPressed: _showAdminHelpDialog,
               ),
-              const SizedBox(width: 20),
-              ElevatedButton(
-                onPressed: () {},
+              const SizedBox(width: 12),
+              // Share button with share icon
+              ElevatedButton.icon(
+                onPressed: _showAdminShareDialog,
+                icon: const Icon(Icons.share_outlined, size: 16),
+                label: Text(
+                  context.tr('share', fallback: 'Share'),
+                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+                ),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppTheme.primaryColor,
-                  minimumSize: const Size(80, 40),
+                  foregroundColor: Colors.white,
+                  minimumSize: const Size(90, 40),
                   padding: const EdgeInsets.symmetric(horizontal: 16),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(8),
                   ),
                   elevation: 0,
-                ),
-                child: Text(
-                  context.tr('share', fallback: 'Share'),
-                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
                 ),
               ),
             ],
@@ -2653,11 +3279,68 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
           const AppTopBarActions(
             showClock: true,
             liveClockWidget: AdminLiveClock(),
+            showLanguageToggle: false,
           ),
         ],
         if (isMobile) ...[
           const SizedBox(width: 8),
-          const AppTopBarActions(showClock: false),
+          IconButton(
+            icon: Icon(
+              _adminNotifications.any((n) => n['is_read'] == false)
+                  ? Icons.notifications_active_outlined
+                  : Icons.notifications_none_outlined,
+              color: _adminNotifications.any((n) => n['is_read'] == false)
+                  ? AppTheme.dangerColor
+                  : AppTheme.getTextPrimaryColor(context),
+              size: 20,
+            ),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+            tooltip: 'Notifications',
+            onPressed: _showAdminNotificationsDialog,
+          ),
+          const SizedBox(width: 4),
+          PopupMenuButton<String>(
+            icon: Icon(
+              Icons.more_vert,
+              color: AppTheme.getTextPrimaryColor(context),
+              size: 20,
+            ),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+            tooltip: 'More Actions',
+            onSelected: (val) {
+              if (val == 'help') _showAdminHelpDialog();
+              if (val == 'share') _showAdminShareDialog();
+            },
+            itemBuilder: (ctx) => const [
+              PopupMenuItem(
+                value: 'help',
+                child: Row(
+                  children: [
+                    Icon(Icons.help_outline, size: 18),
+                    SizedBox(width: 10),
+                    Text('Help & Operational Guide'),
+                  ],
+                ),
+              ),
+              PopupMenuItem(
+                value: 'share',
+                child: Row(
+                  children: [
+                    Icon(Icons.share_outlined, size: 18),
+                    SizedBox(width: 10),
+                    Text('Share SPMC'),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(width: 4),
+          const AppTopBarActions(
+            showClock: false,
+            showLanguageToggle: false,
+          ),
         ],
       ],
     );
@@ -2673,6 +3356,709 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
         bottom: 0,
       ),
       child: _buildBannerTopBar(context, isMobile),
+    );
+  }
+
+  // ─── Header Dialogs: Notifications, Help, Share ─────────────────────────────
+
+  Future<void> _fetchAdminNotifications() async {
+    if (_isLoadingNotifications) return;
+    _isLoadingNotifications = true;
+    try {
+      final list = await NotificationController().fetchNotifications();
+      if (mounted) {
+        setState(() {
+          _adminNotifications = list;
+          _isLoadingNotifications = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _isLoadingNotifications = false;
+        });
+      }
+    }
+  }
+
+  void _showAdminNotificationsDialog() {
+    _fetchAdminNotifications();
+    showDialog(
+      context: context,
+      builder: (dialogCtx) {
+        return StatefulBuilder(
+          builder: (modalCtx, setDialogState) {
+            final unread = _adminNotifications.where((n) => n['is_read'] == false).toList();
+            final read = _adminNotifications.where((n) => n['is_read'] == true).toList();
+
+            return Dialog(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              child: Container(
+                width: 520,
+                height: 520,
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Header
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: const Icon(Icons.notifications_active_outlined, color: AppTheme.primaryColor, size: 22),
+                        ),
+                        const SizedBox(width: 12),
+                        const Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Notifications & Alerts',
+                                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AppTheme.textPrimaryColor),
+                              ),
+                              SizedBox(height: 2),
+                              Text(
+                                'Hospital updates, catalog alerts & system logs',
+                                style: TextStyle(fontSize: 12, color: AppTheme.textSecondaryColor),
+                              ),
+                            ],
+                          ),
+                        ),
+                        if (unread.isNotEmpty)
+                          TextButton(
+                            onPressed: () async {
+                              for (final n in unread) {
+                                final id = n['id'];
+                                if (id is int) {
+                                  await NotificationController().markAsRead(id);
+                                }
+                              }
+                              await _fetchAdminNotifications();
+                              setDialogState(() {});
+                              setState(() {});
+                            },
+                            child: const Text('Mark all as read', style: TextStyle(fontSize: 12, color: AppTheme.primaryColor, fontWeight: FontWeight.bold)),
+                          ),
+                        IconButton(
+                          icon: const Icon(Icons.close, size: 20),
+                          onPressed: () => Navigator.of(dialogCtx).pop(),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 14),
+                    const Divider(height: 1),
+                    const SizedBox(height: 10),
+
+                    // Notification list / Empty state
+                    Expanded(
+                      child: _adminNotifications.isEmpty
+                          ? Center(
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(Icons.notifications_off_outlined, size: 54, color: Colors.grey.shade400),
+                                  const SizedBox(height: 14),
+                                  const Text(
+                                    'No Notifications Right Now',
+                                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: AppTheme.textPrimaryColor),
+                                  ),
+                                  const SizedBox(height: 6),
+                                  const Text(
+                                    'You\'re all caught up! New operational updates,\nbed alerts, and system notices will appear here.',
+                                    style: TextStyle(fontSize: 12, color: AppTheme.textSecondaryColor),
+                                    textAlign: TextAlign.center,
+                                  ),
+                                ],
+                              ),
+                            )
+                          : ListView(
+                              children: [
+                                if (unread.isNotEmpty) ...[
+                                  Padding(
+                                    padding: const EdgeInsets.symmetric(vertical: 6.0),
+                                    child: Row(
+                                      children: [
+                                        const Text('NEW ALERTS', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: AppTheme.dangerColor)),
+                                        const SizedBox(width: 8),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                                          decoration: BoxDecoration(color: AppTheme.dangerBg, borderRadius: BorderRadius.circular(10)),
+                                          child: Text('${unread.length}', style: const TextStyle(color: AppTheme.dangerColor, fontSize: 10, fontWeight: FontWeight.bold)),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  ...unread.map((n) => _buildAdminNotificationTile(n, setDialogState)),
+                                ],
+                                if (read.isNotEmpty) ...[
+                                  const Padding(
+                                    padding: EdgeInsets.symmetric(vertical: 6.0),
+                                    child: Text('EARLIER', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: AppTheme.textSecondaryColor)),
+                                  ),
+                                  ...read.map((n) => _buildAdminNotificationTile(n, setDialogState)),
+                                ],
+                              ],
+                            ),
+                    ),
+
+                    const Divider(height: 1),
+                    const SizedBox(height: 10),
+
+                    // Bottom Bar
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        TextButton.icon(
+                          onPressed: () async {
+                            await _fetchAdminNotifications();
+                            setDialogState(() {});
+                            setState(() {});
+                          },
+                          icon: const Icon(Icons.refresh, size: 16),
+                          label: const Text('Refresh', style: TextStyle(fontSize: 12)),
+                        ),
+                        OutlinedButton(
+                          onPressed: () => Navigator.of(dialogCtx).pop(),
+                          style: AppTheme.cancelButton,
+                          child: const Text('Close'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildAdminNotificationTile(Map<String, dynamic> n, StateSetter setDialogState) {
+    final bool isUnread = n['is_read'] == false;
+    final title = n['title']?.toString() ?? 'Hospital Notification';
+    final message = n['message']?.toString() ?? '';
+    final createdAt = n['created_at']?.toString();
+    String formattedDate = '-';
+    if (createdAt != null && createdAt.isNotEmpty) {
+      try {
+        final dt = DateTime.parse(createdAt).toLocal();
+        formattedDate = DateFormat('dd MMM yyyy, hh:mm a').format(dt);
+      } catch (_) {
+        formattedDate = createdAt;
+      }
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: isUnread ? AppTheme.primaryColor.withValues(alpha: 0.05) : Colors.grey.shade50,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: isUnread ? AppTheme.primaryColor.withValues(alpha: 0.25) : Colors.grey.shade200,
+        ),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: isUnread ? AppTheme.dangerBg : Colors.grey.shade200,
+              shape: BoxShape.circle,
+            ),
+            child: Icon(
+              isUnread ? Icons.notifications_active : Icons.notifications_none,
+              color: isUnread ? AppTheme.dangerColor : AppTheme.textSecondaryColor,
+              size: 18,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: TextStyle(
+                    fontWeight: isUnread ? FontWeight.bold : FontWeight.w600,
+                    fontSize: 13,
+                    color: AppTheme.textPrimaryColor,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  message,
+                  style: const TextStyle(fontSize: 12, color: AppTheme.textSecondaryColor),
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  formattedDate,
+                  style: TextStyle(fontSize: 10, color: Colors.grey.shade500),
+                ),
+              ],
+            ),
+          ),
+          if (isUnread) ...[
+            const SizedBox(width: 8),
+            IconButton(
+              icon: const Icon(Icons.check_circle_outline, size: 18, color: AppTheme.primaryColor),
+              tooltip: 'Mark as read',
+              onPressed: () async {
+                final id = n['id'];
+                if (id is int) {
+                  await NotificationController().markAsRead(id);
+                  await _fetchAdminNotifications();
+                  setDialogState(() {});
+                  setState(() {});
+                }
+              },
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  void _showAdminHelpDialog() {
+    showDialog(
+      context: context,
+      builder: (dialogCtx) {
+        return Dialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          child: Container(
+            width: 600,
+            constraints: const BoxConstraints(maxHeight: 620),
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Header
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(Icons.help_outline, color: AppTheme.primaryColor, size: 24),
+                    ),
+                    const SizedBox(width: 14),
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Admin Help & Operational Guide',
+                            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AppTheme.textPrimaryColor),
+                          ),
+                          SizedBox(height: 2),
+                          Text(
+                            'Guidance for IPD Beds, Master Catalog & Hospital Admin Operations',
+                            style: TextStyle(fontSize: 12, color: AppTheme.textSecondaryColor),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close, size: 20),
+                      onPressed: () => Navigator.of(dialogCtx).pop(),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                const Divider(height: 1),
+                const SizedBox(height: 16),
+
+                // Content
+                Expanded(
+                  child: SingleChildScrollView(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _buildHelpSection(
+                          icon: Icons.hotel_outlined,
+                          title: 'IPD Beds Master Catalog',
+                          content: '• Adding Beds: Click "+ Add Bed". Bed numbers must be alphanumeric with at least one number (e.g. G-101, SP-205, ICU-301). Exclusively alphabetic inputs are rejected.\n'
+                              '• Ward Categories: Select from General, ICU, Semi-Private, Deluxe, etc. Ward category is mandatory and defaults to unselected placeholder.\n'
+                              '• Initial Status: Choose Available, Reserved, Under Maintenance, or Cleaning.\n'
+                              '• Occupancy Rule: Beds currently occupied by admitted patients cannot be marked Available until the patient is formally discharged.',
+                        ),
+                        const SizedBox(height: 14),
+                        _buildHelpSection(
+                          icon: Icons.restaurant_outlined,
+                          title: 'Food Stock & Inventory Management',
+                          content: '• Stock Quantities: Enter valid numerical values up to 1,000,000. Rejects zero for initial quantities.\n'
+                              '• Expiry Dates: Approaching expiration items (< 30 days) appear under Expiring Soon Alerts with days-remaining countdowns.\n'
+                              '• Search & Filters: Use the search box above the catalog list to find groceries, consumables, or drugs by keyword.\n'
+                              '• Replenishments: Trigger automatic purchase replenishment requests when items hit low-stock thresholds.',
+                        ),
+                        const SizedBox(height: 14),
+                        _buildHelpSection(
+                          icon: Icons.medication_outlined,
+                          title: 'Medicine Catalog & Pharmacy Master',
+                          content: '• Adding Medicines: Click "+ Add Medication". Specify drug name, category (Medicine, ICU Consumable, Surgical Item), and default dispensing unit (tabs, caps, vials, etc.).\n'
+                              '• Stock & Alert Levels: Set initial physical stock and low-stock threshold triggers.\n'
+                              '• Quick Search: Search medications by brand or generic name (e.g. Paracetamol) instantly across the table or using the top header search bar.',
+                        ),
+                        const SizedBox(height: 14),
+                        _buildHelpSection(
+                          icon: Icons.admin_panel_settings_outlined,
+                          title: 'Role-Based Access Control (RBAC) & Staff',
+                          content: '• Staff Management: Register doctors, nurses, pharmacists, and front desk operators.\n'
+                              '• Department Permissions: Assign specific access rules and view patient medical histories securely.\n'
+                              '• Password Security: Passwords must conform to SPMC Hospital Security Policy (minimum 8 characters with numbers & symbols).',
+                        ),
+                        const SizedBox(height: 14),
+                        _buildHelpSection(
+                          icon: Icons.support_agent_outlined,
+                          title: 'Hospital IT Helpdesk & Support',
+                          content: '• Support Email: support@sriponnimedicalcentre.com\n'
+                              '• Helpdesk Hotline: +91 431 2345678 (Ext: 1001)\n'
+                              '• Emergency HIS Support: 24/7 Operations Command Desk\n'
+                              '• Location: Sri Ponni Medical Centre, Main Block Ground Floor.',
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 16),
+                const Divider(height: 1),
+                const SizedBox(height: 12),
+
+                // Footer
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    ElevatedButton(
+                      onPressed: () => Navigator.of(dialogCtx).pop(),
+                      style: AppTheme.primaryButton,
+                      child: const Text('Got It'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildHelpSection({
+    required IconData icon,
+    required String title,
+    required String content,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.borderColor),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, size: 18, color: AppTheme.primaryColor),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  title,
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: AppTheme.textPrimaryColor),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            content,
+            style: const TextStyle(fontSize: 12, color: AppTheme.textSecondaryColor, height: 1.45),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _getCurrentPageTitle() {
+    switch (_selectedIndex) {
+      case 0:
+        return 'Admin Control Panel';
+      case 1:
+        return 'Staff Management';
+      case 2:
+        return 'Patients Registry';
+      case 3:
+        return 'Access Control (RBAC)';
+      case 4:
+        return 'Appointments Management';
+      case 5:
+        return 'OPD Management';
+      case 6:
+        return 'IPD Management';
+      case 7:
+        return 'OT Management';
+      case 8:
+        return 'Shift Allocation';
+      case 11:
+        return 'Master Catalog / Food Stock Management';
+      case 13:
+        return 'Master Catalog / Medicine Catalog';
+      case 14:
+        return 'Master Catalog / Home Visit Consumables';
+      case 15:
+        return 'Master Catalog / Carried Kit Items';
+      case 16:
+        return 'Master Catalog / IPD Beds';
+      case 17:
+        return 'Master Catalog / Billing & Services';
+      case 18:
+        return 'Master Catalog / Lab Tests Catalog';
+      case 19:
+        return 'Master Catalog / Specializations Master';
+      case 20:
+        return 'Master Catalog / Database Initialization';
+      case 21:
+        return 'Master Catalog / Department Master';
+      case 22:
+        return 'Master Catalog / Operation Theatres Master';
+      case 23:
+        return 'Master Catalog / Nurse Shift Master';
+      case 24:
+        return 'Master Catalog / Regional Address Master';
+      default:
+        return 'Admin Dashboard';
+    }
+  }
+
+  void _showAdminShareDialog() {
+    final pageTitle = _getCurrentPageTitle();
+    final user = Provider.of<AuthProvider>(context, listen: false).user;
+    final userName = (user?.rawFullname?.isNotEmpty == true
+            ? user!.rawFullname!
+            : (user?.fullname.isNotEmpty == true ? user!.fullname : user?.role)) ??
+        'Admin';
+    final nowFormatted = DateFormat('dd MMM yyyy, hh:mm a').format(DateTime.now());
+    final currentUrl = Uri.base.toString();
+
+    final summaryText = 'Sri Ponni Medical Centre - Hospital Management System\n'
+        'Page: $pageTitle\n'
+        'Generated By: $userName\n'
+        'Timestamp: $nowFormatted\n'
+        'URL: $currentUrl';
+
+    showDialog(
+      context: context,
+      builder: (dialogCtx) {
+        return StatefulBuilder(
+          builder: (modalCtx, setShareState) {
+            return Dialog(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              child: Container(
+                width: 500,
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Header
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: const Icon(Icons.share_outlined, color: AppTheme.primaryColor, size: 22),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'Share Page & Information',
+                                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AppTheme.textPrimaryColor),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                'Current View: $pageTitle',
+                                style: const TextStyle(fontSize: 12, color: AppTheme.primaryColor, fontWeight: FontWeight.w600),
+                              ),
+                            ],
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close, size: 20),
+                          onPressed: () => Navigator.of(dialogCtx).pop(),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 18),
+                    const Divider(height: 1),
+                    const SizedBox(height: 18),
+
+                    // Direct Page Link Box
+                    const Text('Page Direct Link', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: AppTheme.textPrimaryColor)),
+                    const SizedBox(height: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF1F5F9),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: AppTheme.borderColor),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.link, size: 18, color: AppTheme.textSecondaryColor),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              currentUrl,
+                              style: const TextStyle(fontSize: 12, color: AppTheme.textSecondaryColor),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppTheme.primaryColor,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              minimumSize: const Size(80, 36),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                            ),
+                            onPressed: () async {
+                              await Clipboard.setData(ClipboardData(text: currentUrl));
+                              if (mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('Page link copied to clipboard!'),
+                                    backgroundColor: AppTheme.primaryColor,
+                                    duration: Duration(seconds: 2),
+                                  ),
+                                );
+                              }
+                            },
+                            icon: const Icon(Icons.copy, size: 14),
+                            label: const Text('Copy Link', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+
+                    // Share Options Row
+                    const Text('Quick Share Actions', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: AppTheme.textPrimaryColor)),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        // Copy Summary Button
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            style: OutlinedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              side: const BorderSide(color: AppTheme.primaryColor),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            ),
+                            onPressed: () async {
+                              await Clipboard.setData(ClipboardData(text: summaryText));
+                              if (mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('Page summary copied to clipboard!'),
+                                    backgroundColor: AppTheme.secondaryColor,
+                                    duration: Duration(seconds: 2),
+                                  ),
+                                );
+                              }
+                            },
+                            icon: const Icon(Icons.description_outlined, size: 16, color: AppTheme.primaryColor),
+                            label: const Text('Copy Summary', style: TextStyle(color: AppTheme.primaryColor, fontSize: 12, fontWeight: FontWeight.bold)),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        // Email Share Button
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            style: OutlinedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              side: const BorderSide(color: Color(0xFF0284C7)),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            ),
+                            onPressed: () async {
+                              final emailUri = Uri(
+                                scheme: 'mailto',
+                                queryParameters: {
+                                  'subject': 'SPMC HMS - $pageTitle',
+                                  'body': 'Hi,\n\nPlease find the details for $pageTitle on Sri Ponni Medical Centre HMS:\n\n$summaryText\n\nRegards,\n$userName',
+                                },
+                              );
+                              try {
+                                if (await canLaunchUrl(emailUri)) {
+                                  await launchUrl(emailUri);
+                                } else {
+                                  await Clipboard.setData(ClipboardData(text: summaryText));
+                                  if (mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text('Email client not found. Summary copied to clipboard!'),
+                                        backgroundColor: AppTheme.primaryColor,
+                                      ),
+                                    );
+                                  }
+                                }
+                              } catch (_) {
+                                await Clipboard.setData(ClipboardData(text: summaryText));
+                                if (mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text('Summary copied to clipboard!'),
+                                      backgroundColor: AppTheme.primaryColor,
+                                    ),
+                                  );
+                                }
+                              }
+                            },
+                            icon: const Icon(Icons.email_outlined, size: 16, color: Color(0xFF0284C7)),
+                            label: const Text('Email Details', style: TextStyle(color: Color(0xFF0284C7), fontSize: 12, fontWeight: FontWeight.bold)),
+                          ),
+                        ),
+                      ],
+                    ),
+
+                    const SizedBox(height: 20),
+                    const Divider(height: 1),
+                    const SizedBox(height: 12),
+
+                    // Close Button
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        OutlinedButton(
+                          onPressed: () => Navigator.of(dialogCtx).pop(),
+                          style: AppTheme.cancelButton,
+                          child: const Text('Close'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
     );
   }
 
@@ -2692,12 +4078,16 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
         const SizedBox(height: 2),
         Row(
           children: const [
-            Text(
-              'System Admin',
-              style: TextStyle(
-                fontSize: 26,
-                fontWeight: FontWeight.bold,
-                color: AppTheme.textPrimaryColor,
+            Flexible(
+              child: Text(
+                'System Admin',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 26,
+                  fontWeight: FontWeight.bold,
+                  color: AppTheme.textPrimaryColor,
+                ),
               ),
             ),
             SizedBox(width: 8),
@@ -2857,7 +4247,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
               children: [
                 Flexible(
                   child: Text(
-                    'View details',
+                    context.tr('view_details', fallback: 'View details'),
                     style: TextStyle(
                       color: AppTheme.primaryColor,
                       fontSize: isMobile ? 11 : 12,
@@ -2880,10 +4270,10 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     );
   }
 
-  Widget _buildAlertsSection() {
+  Widget _buildAlertsSection([bool isMobile = false]) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(24),
+      padding: EdgeInsets.all(isMobile ? 16 : 24),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
@@ -2911,10 +4301,10 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                       ),
                     ),
                     const SizedBox(width: 10),
-                    const Flexible(
+                    Flexible(
                       child: Text(
-                        'System Alerts',
-                        style: TextStyle(
+                        context.tr('system_alerts', fallback: 'System Alerts'),
+                        style: const TextStyle(
                           fontWeight: FontWeight.bold,
                           fontSize: 16,
                         ),
@@ -2927,9 +4317,9 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
               const SizedBox(width: 8),
               InkWell(
                 onTap: () {},
-                child: const Text(
-                  'View all alerts',
-                  style: TextStyle(
+                child: Text(
+                  context.tr('view_all_alerts', fallback: 'View all alerts'),
+                  style: const TextStyle(
                     color: AppTheme.logoRed,
                     fontSize: 12,
                     fontWeight: FontWeight.bold,
@@ -2999,7 +4389,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   Widget _buildQuickActions([bool isMobile = false]) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(24),
+      padding: EdgeInsets.all(isMobile ? 16 : 24),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
@@ -3011,9 +4401,9 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
-                'Administrative Actions',
-                style: TextStyle(
+              Text(
+                context.tr('admin_actions', fallback: 'Administrative Actions'),
+                style: const TextStyle(
                   color: AppTheme.textPrimaryColor,
                   fontWeight: FontWeight.bold,
                   fontSize: 16,
@@ -3038,13 +4428,13 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                   children: [
                     _buildActionGridItem(
                       Icons.person_add_outlined,
-                      'Register\nNew Staff',
+                      context.tr('register_new_staff', fallback: 'Register\nNew Staff'),
                       () => _showAddUserDialog(context),
                     ),
                     const SizedBox(width: 12),
                     _buildActionGridItem(
                       Icons.person_add_alt_1_outlined,
-                      'Register\nNew Patient',
+                      context.tr('register_new_patient', fallback: 'Register\nNew Patient'),
                       () => context.go(AppRoutes.adminNewPatient),
                     ),
                   ],
@@ -3060,7 +4450,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                     const SizedBox(width: 12),
                     _buildActionGridItem(
                       Icons.inventory_2_outlined,
-                      'Inventory\nManagement',
+                      context.tr('inventory', fallback: 'Inventory\nManagement'),
                       () => context.go(AppRoutes.adminInventory),
                     ),
                   ],
@@ -3072,13 +4462,13 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
               children: [
                 _buildActionGridItem(
                   Icons.person_add_outlined,
-                  'Register\nNew Staff',
+                  context.tr('register_new_staff', fallback: 'Register\nNew Staff'),
                   () => _showAddUserDialog(context),
                 ),
                 const SizedBox(width: 12),
                 _buildActionGridItem(
                   Icons.person_add_alt_1_outlined,
-                  'Register\nNew Patient',
+                  context.tr('register_new_patient', fallback: 'Register\nNew Patient'),
                   () => context.go(AppRoutes.adminNewPatient),
                 ),
                 const SizedBox(width: 12),
@@ -3090,7 +4480,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                 const SizedBox(width: 12),
                 _buildActionGridItem(
                   Icons.inventory_2_outlined,
-                  'Inventory\nManagement',
+                  context.tr('inventory', fallback: 'Inventory\nManagement'),
                   () => context.go(AppRoutes.adminInventory),
                 ),
               ],
@@ -3176,6 +4566,215 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     final int todayOnDutyCount = weeklyData.length > todayIndex ? weeklyData[todayIndex].toInt() : 0;
     final breakdown = _getDayStaffBreakdown(selectedDayIndex);
 
+    final Widget headerIconBadge = Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: AppTheme.primaryColor.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: const Icon(
+        Icons.groups_outlined,
+        color: AppTheme.primaryColor,
+        size: 22,
+      ),
+    );
+
+    final Widget headerTitleColumn = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          context.tr('staff_roster', fallback: 'Staff On-Duty Roster'),
+          style: const TextStyle(
+            fontWeight: FontWeight.bold,
+            fontSize: 17,
+            color: AppTheme.textPrimaryColor,
+          ),
+          overflow: TextOverflow.ellipsis,
+        ),
+        const SizedBox(height: 3),
+        Text(
+          context.tr('staff_roster_sub', fallback: 'Daily scheduled hospital duty presence (Mon – Sun)'),
+          style: const TextStyle(
+            fontSize: 12,
+            color: AppTheme.textSecondaryColor,
+            fontWeight: FontWeight.w500,
+          ),
+          overflow: TextOverflow.ellipsis,
+        ),
+      ],
+    );
+
+    Widget buildTodayStatusPill(double maxWidth) => ConstrainedBox(
+      constraints: BoxConstraints(maxWidth: maxWidth),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: AppTheme.secondaryColor.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: AppTheme.secondaryColor.withValues(alpha: 0.3),
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 7,
+              height: 7,
+              decoration: const BoxDecoration(
+                color: AppTheme.secondaryColor,
+                shape: BoxShape.circle,
+              ),
+            ),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text(
+                context.tr(
+                  'today_on_duty',
+                  fallback: 'Today: $todayOnDutyCount On Duty',
+                  params: {'count': '$todayOnDutyCount'},
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.bold,
+                  color: AppTheme.secondaryColor,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    final Widget roleFilterMenu = PopupMenuButton<String>(
+      tooltip: 'Filter staff role',
+      initialValue: _selectedStaffOverviewFilter,
+      onSelected: (String val) {
+        setState(() {
+          _selectedStaffOverviewFilter = val;
+        });
+      },
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(10),
+        side: const BorderSide(color: AppTheme.borderColor),
+      ),
+      color: Colors.white,
+      elevation: 4,
+      itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
+        const PopupMenuItem<String>(
+          value: 'This Week',
+          child: Row(
+            children: [
+              Icon(
+                Icons.calendar_today_outlined,
+                size: 16,
+                color: AppTheme.primaryColor,
+              ),
+              SizedBox(width: 8),
+              Text(
+                'All Staff',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const PopupMenuItem<String>(
+          value: 'Doctors',
+          child: Row(
+            children: [
+              Icon(
+                Icons.medical_services_outlined,
+                size: 16,
+                color: AppTheme.primaryColor,
+              ),
+              SizedBox(width: 8),
+              Text(
+                'Doctors Only',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const PopupMenuItem<String>(
+          value: 'Nurses',
+          child: Row(
+            children: [
+              Icon(
+                Icons.health_and_safety_outlined,
+                size: 16,
+                color: AppTheme.secondaryColor,
+              ),
+              SizedBox(width: 8),
+              Text(
+                'Nurses Only',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const PopupMenuItem<String>(
+          value: 'Admin & Support',
+          child: Row(
+            children: [
+              Icon(
+                Icons.admin_panel_settings_outlined,
+                size: 16,
+                color: AppTheme.warningColor,
+              ),
+              SizedBox(width: 8),
+              Text(
+                'Admin & Support',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: AppTheme.borderColor),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              _selectedStaffOverviewFilter == 'This Week'
+                  ? 'All Roles'
+                  : _selectedStaffOverviewFilter,
+              style: const TextStyle(
+                fontSize: 11.5,
+                fontWeight: FontWeight.bold,
+                color: AppTheme.textPrimaryColor,
+              ),
+            ),
+            const SizedBox(width: 4),
+            const Icon(
+              Icons.keyboard_arrow_down,
+              size: 15,
+              color: AppTheme.textSecondaryColor,
+            ),
+          ],
+        ),
+      ),
+    );
+
     return Container(
       padding: EdgeInsets.all(isMobile ? 16 : 24),
       decoration: BoxDecoration(
@@ -3186,212 +4785,45 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Header Row
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: AppTheme.primaryColor.withValues(alpha: 0.08),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: const Icon(
-                  Icons.groups_outlined,
-                  color: AppTheme.primaryColor,
-                  size: 22,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
+          // Header Row (stacks controls cleanly on mobile / narrow panes)
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final Widget todayPill = buildTodayStatusPill(constraints.maxWidth);
+              if (isMobile || constraints.maxWidth < 440) {
+                return Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
-                      'Staff On-Duty Roster',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 17,
-                        color: AppTheme.textPrimaryColor,
-                      ),
-                      overflow: TextOverflow.ellipsis,
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        headerIconBadge,
+                        const SizedBox(width: 12),
+                        Expanded(child: headerTitleColumn),
+                      ],
                     ),
-                    const SizedBox(height: 3),
-                    const Text(
-                      'Daily scheduled hospital duty presence (Mon – Sun)',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: AppTheme.textSecondaryColor,
-                        fontWeight: FontWeight.w500,
-                      ),
-                      overflow: TextOverflow.ellipsis,
+                    const SizedBox(height: 10),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [todayPill, roleFilterMenu],
                     ),
                   ],
-                ),
-              ),
-              const SizedBox(width: 8),
-              // Today status pill
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(
-                  color: AppTheme.secondaryColor.withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(
-                    color: AppTheme.secondaryColor.withValues(alpha: 0.3),
-                  ),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 7,
-                      height: 7,
-                      decoration: const BoxDecoration(
-                        color: AppTheme.secondaryColor,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      'Today: $todayOnDutyCount On Duty',
-                      style: const TextStyle(
-                        fontSize: 11.5,
-                        fontWeight: FontWeight.bold,
-                        color: AppTheme.secondaryColor,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 8),
-              // Filter Popup
-              PopupMenuButton<String>(
-                tooltip: 'Filter staff role',
-                initialValue: _selectedStaffOverviewFilter,
-                onSelected: (String val) {
-                  setState(() {
-                    _selectedStaffOverviewFilter = val;
-                  });
-                },
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  side: const BorderSide(color: AppTheme.borderColor),
-                ),
-                color: Colors.white,
-                elevation: 4,
-                itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
-                  const PopupMenuItem<String>(
-                    value: 'This Week',
-                    child: Row(
-                      children: [
-                        Icon(
-                          Icons.calendar_today_outlined,
-                          size: 16,
-                          color: AppTheme.primaryColor,
-                        ),
-                        SizedBox(width: 8),
-                        Text(
-                          'All Staff',
-                          style: TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const PopupMenuItem<String>(
-                    value: 'Doctors',
-                    child: Row(
-                      children: [
-                        Icon(
-                          Icons.medical_services_outlined,
-                          size: 16,
-                          color: AppTheme.primaryColor,
-                        ),
-                        SizedBox(width: 8),
-                        Text(
-                          'Doctors Only',
-                          style: TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const PopupMenuItem<String>(
-                    value: 'Nurses',
-                    child: Row(
-                      children: [
-                        Icon(
-                          Icons.health_and_safety_outlined,
-                          size: 16,
-                          color: AppTheme.secondaryColor,
-                        ),
-                        SizedBox(width: 8),
-                        Text(
-                          'Nurses Only',
-                          style: TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const PopupMenuItem<String>(
-                    value: 'Admin & Support',
-                    child: Row(
-                      children: [
-                        Icon(
-                          Icons.admin_panel_settings_outlined,
-                          size: 16,
-                          color: AppTheme.warningColor,
-                        ),
-                        SizedBox(width: 8),
-                        Text(
-                          'Admin & Support',
-                          style: TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
+                );
+              }
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  headerIconBadge,
+                  const SizedBox(width: 12),
+                  Expanded(child: headerTitleColumn),
+                  const SizedBox(width: 8),
+                  todayPill,
+                  const SizedBox(width: 8),
+                  roleFilterMenu,
                 ],
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: AppTheme.borderColor),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        _selectedStaffOverviewFilter == 'This Week'
-                            ? 'All Roles'
-                            : _selectedStaffOverviewFilter,
-                        style: const TextStyle(
-                          fontSize: 11.5,
-                          fontWeight: FontWeight.bold,
-                          color: AppTheme.textPrimaryColor,
-                        ),
-                      ),
-                      const SizedBox(width: 4),
-                      const Icon(
-                        Icons.keyboard_arrow_down,
-                        size: 15,
-                        color: AppTheme.textSecondaryColor,
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
+              );
+            },
           ),
 
           const SizedBox(height: 14),
@@ -3525,7 +4957,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
 
                   return Expanded(
                     child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 2.5),
+                      padding: EdgeInsets.symmetric(horizontal: isMobile ? 1.5 : 2.5),
                       child: InkWell(
                         onTap: () {
                           setState(() {
@@ -3535,7 +4967,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                         borderRadius: BorderRadius.circular(10),
                         child: AnimatedContainer(
                           duration: const Duration(milliseconds: 180),
-                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 2),
                           decoration: BoxDecoration(
                             color: isSelected
                                 ? AppTheme.primaryColor
@@ -3564,37 +4996,44 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Text(
-                                    day,
-                                    style: TextStyle(
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.bold,
-                                      color: isSelected
-                                          ? Colors.white
-                                          : (isToday
-                                              ? AppTheme.secondaryColor
-                                              : AppTheme.textPrimaryColor),
-                                    ),
-                                  ),
-                                  if (isToday) ...[
-                                    const SizedBox(width: 3),
-                                    Container(
-                                      width: 5,
-                                      height: 5,
-                                      decoration: BoxDecoration(
-                                        color: isSelected ? Colors.white : AppTheme.secondaryColor,
-                                        shape: BoxShape.circle,
+                              FittedBox(
+                                fit: BoxFit.scaleDown,
+                                child: Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(
+                                      day,
+                                      style: TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.bold,
+                                        color: isSelected
+                                            ? Colors.white
+                                            : (isToday
+                                                ? AppTheme.secondaryColor
+                                                : AppTheme.textPrimaryColor),
                                       ),
                                     ),
+                                    if (isToday) ...[
+                                      const SizedBox(width: 3),
+                                      Container(
+                                        width: 5,
+                                        height: 5,
+                                        decoration: BoxDecoration(
+                                          color: isSelected ? Colors.white : AppTheme.secondaryColor,
+                                          shape: BoxShape.circle,
+                                        ),
+                                      ),
+                                    ],
                                   ],
-                                ],
+                                ),
                               ),
                               const SizedBox(height: 4),
                               Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+                                padding: EdgeInsets.symmetric(
+                                  horizontal: isMobile ? 4 : 6,
+                                  vertical: 1.5,
+                                ),
                                 decoration: BoxDecoration(
                                   color: isSelected
                                       ? Colors.white.withValues(alpha: 0.22)
@@ -3609,16 +5048,19 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                                     width: 0.8,
                                   ),
                                 ),
-                                child: Text(
-                                  '$count',
-                                  style: TextStyle(
-                                    fontSize: 10.5,
-                                    fontWeight: FontWeight.bold,
-                                    color: isSelected
-                                        ? Colors.white
-                                        : (isToday
-                                            ? AppTheme.secondaryColor
-                                            : AppTheme.textPrimaryColor),
+                                child: FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  child: Text(
+                                    '$count',
+                                    style: TextStyle(
+                                      fontSize: 10.5,
+                                      fontWeight: FontWeight.bold,
+                                      color: isSelected
+                                          ? Colors.white
+                                          : (isToday
+                                              ? AppTheme.secondaryColor
+                                              : AppTheme.textPrimaryColor),
+                                    ),
                                   ),
                                 ),
                               ),
@@ -3670,9 +5112,41 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     final int totalOnDuty = (breakdown['totalOnDuty'] as int?) ?? 0;
     final int totalOffDuty = (breakdown['totalOffDuty'] as int?) ?? 0;
 
+    final Widget onDutyBadge = Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: AppTheme.secondaryColor.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(
+        '$totalOnDuty On Duty',
+        style: const TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.bold,
+          color: AppTheme.secondaryColor,
+        ),
+      ),
+    );
+
+    final Widget offDutyBadge = Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: const Color(0xFFE2E8F0),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(
+        '$totalOffDuty Off Duty',
+        style: const TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.bold,
+          color: AppTheme.textSecondaryColor,
+        ),
+      ),
+    );
+
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(16),
+      padding: EdgeInsets.all(isMobile ? 12 : 16),
       decoration: BoxDecoration(
         color: const Color(0xFFF8FAFC),
         borderRadius: BorderRadius.circular(14),
@@ -3682,67 +5156,62 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           // Breakdown Header
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(6),
-                decoration: BoxDecoration(
-                  color: AppTheme.primaryColor.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: const Icon(
-                  Icons.calendar_month_outlined,
-                  size: 16,
-                  color: AppTheme.primaryColor,
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  '$selectedDayFull Roster ${isSelectedToday ? '(Today)' : ''}',
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 14,
-                    color: AppTheme.textPrimaryColor,
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final Widget titleRow = Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(6),
+                    decoration: BoxDecoration(
+                      color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(
+                      Icons.calendar_month_outlined,
+                      size: 16,
+                      color: AppTheme.primaryColor,
+                    ),
                   ),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              const SizedBox(width: 8),
-              // On-duty badge
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                  color: AppTheme.secondaryColor.withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Text(
-                  '$totalOnDuty On Duty',
-                  style: const TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.bold,
-                    color: AppTheme.secondaryColor,
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '$selectedDayFull Roster ${isSelectedToday ? '(Today)' : ''}',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14,
+                        color: AppTheme.textPrimaryColor,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
-                ),
-              ),
-              const SizedBox(width: 6),
-              // Off-duty badge
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFE2E8F0),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Text(
-                  '$totalOffDuty Off Duty',
-                  style: const TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.bold,
-                    color: AppTheme.textSecondaryColor,
-                  ),
-                ),
-              ),
-            ],
+                ],
+              );
+
+              if (isMobile || constraints.maxWidth < 380) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    titleRow,
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: [onDutyBadge, offDutyBadge],
+                    ),
+                  ],
+                );
+              }
+
+              return Row(
+                children: [
+                  Expanded(child: titleRow),
+                  const SizedBox(width: 8),
+                  onDutyBadge,
+                  const SizedBox(width: 6),
+                  offDutyBadge,
+                ],
+              );
+            },
           ),
 
           const SizedBox(height: 14),
@@ -3804,10 +5273,8 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
               iconColor: AppTheme.primaryColor,
             ),
             const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: allDoctors.map((doc) {
+            _buildStaffBadgeGrid(
+              allDoctors.map((doc) {
                 final spec = doc.specialization != null && doc.specialization!.isNotEmpty
                     ? doc.specialization!
                     : 'General Physician';
@@ -3832,10 +5299,8 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
               iconColor: AppTheme.secondaryColor,
             ),
             const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: allNurses.map((nurse) {
+            _buildStaffBadgeGrid(
+              allNurses.map((nurse) {
                 return _buildStaffMemberBadge(
                   name: nurse.fullname,
                   subtitle: nurse.shiftType != null && nurse.shiftType!.isNotEmpty
@@ -3859,10 +5324,8 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
               iconColor: AppTheme.warningColor,
             ),
             const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: allSupport.map((staff) {
+            _buildStaffBadgeGrid(
+              allSupport.map((staff) {
                 return _buildStaffMemberBadge(
                   name: staff.fullname,
                   subtitle: staff.role,
@@ -3884,10 +5347,8 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
               iconColor: const Color(0xFF94A3B8),
             ),
             const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: allOffDuty.map((staff) {
+            _buildStaffBadgeGrid(
+              allOffDuty.map((staff) {
                 final reason = _getUserOffReason(staff, selectedDayAbbr);
                 return _buildStaffMemberBadge(
                   name: staff.role == 'Doctor' ? 'Dr. ${staff.fullname}' : staff.fullname,
@@ -3904,6 +5365,21 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     );
   }
 
+  Widget _buildStaffBadgeGrid(List<Widget> badges) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final double maxWidth = constraints.maxWidth;
+        final int crossAxisCount = maxWidth < 340 ? 1 : (maxWidth < 700 ? 2 : (maxWidth < 1050 ? 3 : 4));
+        final double itemWidth = (maxWidth - (crossAxisCount - 1) * 8) / crossAxisCount;
+        return Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: badges.map((b) => SizedBox(width: itemWidth, child: b)).toList(),
+        );
+      },
+    );
+  }
+
   Widget _buildStaffRoleSectionHeader({
     required String title,
     required int count,
@@ -3914,12 +5390,16 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
       children: [
         Icon(icon, size: 15, color: iconColor),
         const SizedBox(width: 6),
-        Text(
-          title,
-          style: const TextStyle(
-            fontSize: 12,
-            fontWeight: FontWeight.bold,
-            color: AppTheme.textPrimaryColor,
+        Flexible(
+          child: Text(
+            title,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
+              color: AppTheme.textPrimaryColor,
+            ),
           ),
         ),
         const SizedBox(width: 6),
@@ -3950,7 +5430,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     required Color roleColor,
   }) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(10),
@@ -3968,10 +5448,9 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
         ],
       ),
       child: Row(
-        mainAxisSize: MainAxisSize.min,
         children: [
           CircleAvatar(
-            radius: 12,
+            radius: 13,
             backgroundColor: isOnDuty
                 ? roleColor.withValues(alpha: 0.12)
                 : const Color(0xFFF1F5F9),
@@ -3987,32 +5466,38 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             ),
           ),
           const SizedBox(width: 8),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                name,
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: isOnDuty ? AppTheme.textPrimaryColor : const Color(0xFF64748B),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w600,
+                    color: isOnDuty ? AppTheme.textPrimaryColor : const Color(0xFF64748B),
+                  ),
                 ),
-              ),
-              const SizedBox(height: 1),
-              Text(
-                subtitle,
-                style: TextStyle(
-                  fontSize: 10,
-                  color: isOnDuty ? AppTheme.textSecondaryColor : const Color(0xFF94A3B8),
-                  fontWeight: FontWeight.w500,
+                const SizedBox(height: 2),
+                Text(
+                  subtitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: isOnDuty ? AppTheme.textSecondaryColor : const Color(0xFF94A3B8),
+                    fontWeight: FontWeight.w500,
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
           const SizedBox(width: 6),
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2.5),
             decoration: BoxDecoration(
               color: isOnDuty
                   ? AppTheme.secondaryColor.withValues(alpha: 0.1)
@@ -4082,7 +5567,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   }
 
   Widget _buildShiftManagement(bool isMobile) {
-    if (_isLoadingShifts) {
+    if (_isLoadingShifts && _shifts.isEmpty && _allocations.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
 
@@ -4096,16 +5581,40 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
               ? Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
-                      'Shift Allocation',
-                      style: TextStyle(
-                        fontSize: 22,
-                        fontWeight: FontWeight.bold,
-                      ),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        const Text(
+                          'Shift Allocation',
+                          style: TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: AppTheme.primaryColor.withOpacity(0.08),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(
+                              color: AppTheme.primaryColor.withOpacity(0.2),
+                            ),
+                          ),
+                          child: const Text(
+                            'IPD Only',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                              color: AppTheme.primaryColor,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 4),
-                    Text(
-                      'Define shift schedules and allocate nurses to active shifts',
+                    const Text(
+                      'Define shift schedules and allocate nurses to active shifts. Shift allocation is for IPD only.',
                       style: TextStyle(
                         color: AppTheme.textSecondaryColor,
                         fontSize: 12,
@@ -4156,16 +5665,40 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text(
-                            'Shift Allocation',
-                            style: TextStyle(
-                              fontSize: 26,
-                              fontWeight: FontWeight.bold,
-                            ),
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.center,
+                            children: [
+                              const Text(
+                                'Shift Allocation',
+                                style: TextStyle(
+                                  fontSize: 26,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: AppTheme.primaryColor.withOpacity(0.08),
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(
+                                    color: AppTheme.primaryColor.withOpacity(0.2),
+                                  ),
+                                ),
+                                child: const Text(
+                                  'IPD Only',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.bold,
+                                    color: AppTheme.primaryColor,
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
                           const SizedBox(height: 4),
-                          Text(
-                            'Define shift schedules and allocate nurses to active shifts',
+                          const Text(
+                            'Define shift schedules and allocate nurses to active shifts. Shift allocation is for IPD only.',
                             style: TextStyle(
                               color: AppTheme.textSecondaryColor,
                               fontSize: 13,
@@ -4214,7 +5747,39 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                     ),
                   ],
                 ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 16),
+          // Informational Notice Banner
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: const Color(0xFFEFF6FF),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: const Color(0xFFBFDBFE),
+              ),
+            ),
+            child: const Row(
+              children: [
+                Icon(
+                  Icons.info_outline,
+                  size: 18,
+                  color: AppTheme.primaryColor,
+                ),
+                SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Shift allocation is for IPD only.',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: AppTheme.primaryColor,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 20),
 
           if (isMobile) ...[
             _buildShiftDefinitionsCard(),
@@ -4319,60 +5884,973 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     }
   }
 
-  Widget _buildAssignedNurseChip(String nurseName, int rosterId) {
+  Widget _buildAssignedNurseChip(
+    String nurseName,
+    int rosterId, {
+    bool isReadOnly = false,
+    String? ward,
+    Map<String, dynamic>? shift,
+  }) {
     final avatarColors = AppTheme.getAvatarColors(nurseName);
 
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-      decoration: BoxDecoration(
-        color: AppTheme.primaryColor.withOpacity(0.06),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: AppTheme.primaryColor.withOpacity(0.2)),
+    return Tooltip(
+      message: isReadOnly
+          ? nurseName
+          : 'Click to manage daily shifts or substitute single-day leave',
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(20),
+          onTap: (!isReadOnly && ward != null && shift != null)
+              ? () => _showSlotDaysManagementDialog(ward, shift, rosterId)
+              : null,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            decoration: BoxDecoration(
+              color: isReadOnly
+                  ? const Color(0xFFF1F5F9)
+                  : AppTheme.primaryColor.withOpacity(0.06),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                color: isReadOnly
+                    ? Colors.grey.shade300
+                    : AppTheme.primaryColor.withOpacity(0.2),
+              ),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircleAvatar(
+                  radius: 11,
+                  backgroundColor:
+                      isReadOnly ? Colors.grey.shade400 : avatarColors['bg'],
+                  child: Text(
+                    nurseName.isNotEmpty
+                        ? nurseName.substring(0, 1).toUpperCase()
+                        : 'N',
+                    style: TextStyle(
+                      color: isReadOnly ? Colors.white : avatarColors['text'],
+                      fontWeight: FontWeight.bold,
+                      fontSize: 9,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(
+                    nurseName,
+                    style: TextStyle(
+                      color: isReadOnly
+                          ? AppTheme.textPrimaryColor
+                          : AppTheme.primaryColor,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 12,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                if (!isReadOnly) ...[
+                  const SizedBox(width: 6),
+                  GestureDetector(
+                    onTap: () {
+                      if (ward != null && shift != null) {
+                        _showSlotActionOptionsDialog(
+                            ward, shift, rosterId, nurseName);
+                      } else {
+                        _deleteRosterEntry(rosterId);
+                      }
+                    },
+                    child: MouseRegion(
+                      cursor: SystemMouseCursors.click,
+                      child: Icon(
+                        Icons.cancel,
+                        size: 14,
+                        color: Colors.redAccent.shade400,
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
       ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          CircleAvatar(
-            radius: 11,
-            backgroundColor: avatarColors['bg'],
-            child: Text(
-              nurseName.isNotEmpty
-                  ? nurseName.substring(0, 1).toUpperCase()
-                  : 'N',
-              style: TextStyle(
-                color: avatarColors['text'],
-                fontWeight: FontWeight.bold,
-                fontSize: 9,
+    );
+  }
+
+  void _showSlotActionOptionsDialog(
+    String ward,
+    Map<String, dynamic> shift,
+    int rosterId,
+    String nurseName,
+  ) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.white,
+        surfaceTintColor: Colors.transparent,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(
+          children: [
+            const Icon(Icons.edit_calendar_rounded,
+                color: AppTheme.primaryColor),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'Manage $ward Ward (${shift['name'] ?? 'Shift'})',
+                style:
+                    const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
               ),
             ),
-          ),
-          const SizedBox(width: 6),
-          Flexible(
-            child: Text(
-              nurseName,
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '$nurseName is assigned to this slot for the week.',
               style: const TextStyle(
-                color: AppTheme.primaryColor,
-                fontWeight: FontWeight.bold,
-                fontSize: 12,
+                  fontSize: 13, color: AppTheme.textPrimaryColor),
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'Choose an option:',
+              style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: AppTheme.textSecondaryColor),
+            ),
+            const SizedBox(height: 12),
+            ListTile(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+                side: BorderSide(color: AppTheme.primaryColor.withOpacity(0.3)),
               ),
-              overflow: TextOverflow.ellipsis,
+              tileColor: AppTheme.primaryColor.withOpacity(0.04),
+              leading: const Icon(Icons.event_repeat_rounded,
+                  color: AppTheme.primaryColor),
+              title: const Text('Manage Single Day (Leave / Substitution)',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+              subtitle: const Text(
+                  'Substitute nurse or mark leave for a specific day only without resetting the full week',
+                  style: TextStyle(fontSize: 11)),
+              onTap: () {
+                Navigator.pop(ctx);
+                _showSlotDaysManagementDialog(ward, shift, rosterId);
+              },
             ),
-          ),
-          const SizedBox(width: 6),
-          GestureDetector(
-            onTap: () => _deleteRosterEntry(rosterId),
-            child: Icon(
-              Icons.cancel,
-              size: 14,
-              color: Colors.redAccent.shade400,
+            const SizedBox(height: 8),
+            ListTile(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+                side: BorderSide(color: Colors.red.shade200),
+              ),
+              tileColor: Colors.red.shade50.withOpacity(0.4),
+              leading: const Icon(Icons.delete_sweep_rounded,
+                  color: Colors.redAccent),
+              title: const Text('Clear Entire Week',
+                  style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 13,
+                      color: Colors.redAccent)),
+              subtitle: const Text(
+                  'Removes nurse assignment across all 7 days of this week',
+                  style: TextStyle(fontSize: 11)),
+              onTap: () {
+                Navigator.pop(ctx);
+                _deleteRosterEntry(rosterId);
+              },
             ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildAssignNurseButton(String ward, int shiftId) {
+  void _showSlotDaysManagementDialog(
+    String ward,
+    Map<String, dynamic> shift,
+    int rosterId,
+  ) {
+    final shiftId = shift['id'];
+    final shiftName = shift['name'] ?? 'Shift';
+    final weekStartStr = DateFormat('dd MMM').format(_selectedRosterWeekStart);
+    final weekEndStr = DateFormat('dd MMM yyyy')
+        .format(_selectedRosterWeekStart.add(const Duration(days: 6)));
+
+    showDialog(
+      context: context,
+      builder: (dialogCtx) {
+        return StatefulBuilder(
+          builder: (stfCtx, setStfState) {
+            final days = List.generate(
+                7, (i) => _selectedRosterWeekStart.add(Duration(days: i)));
+
+            return AlertDialog(
+              backgroundColor: Colors.white,
+              surfaceTintColor: Colors.transparent,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16)),
+              title: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: AppTheme.primaryColor.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(Icons.calendar_view_week_rounded,
+                        color: AppTheme.primaryColor, size: 20),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '$ward Ward - $shiftName',
+                          style: const TextStyle(
+                              fontSize: 16, fontWeight: FontWeight.bold),
+                        ),
+                        Text(
+                          'Weekly Roster: $weekStartStr - $weekEndStr',
+                          style: const TextStyle(
+                              fontSize: 12,
+                              color: AppTheme.textSecondaryColor,
+                              fontWeight: FontWeight.normal),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              content: SizedBox(
+                width: 520,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 8),
+                        margin: const EdgeInsets.only(bottom: 12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF1F5F9),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.grey.shade300),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.info_outline,
+                                size: 16, color: AppTheme.primaryColor),
+                            const SizedBox(width: 8),
+                            const Expanded(
+                              child: Text(
+                                'Manage daily assignments below. Substituting or unassigning a nurse on a single day (e.g. for leave) preserves the rest of the week.',
+                                style: TextStyle(
+                                    fontSize: 11,
+                                    color: AppTheme.textPrimaryColor),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      ...days.map((dayDate) {
+                        final dateStr =
+                            DateFormat('yyyy-MM-dd').format(dayDate);
+                        final dayName = DateFormat('EEEE').format(dayDate);
+                        final displayDate =
+                            DateFormat('dd MMM').format(dayDate);
+
+                        final dayAlloc = _rosters.firstWhere(
+                          (r) =>
+                              r['ward_type'] == ward &&
+                              r['shift_id'] == shiftId &&
+                              (r['allocation_date']
+                                      ?.toString()
+                                      .startsWith(dateStr) ??
+                                  false),
+                          orElse: () => {},
+                        );
+
+                        final bool hasAlloc = dayAlloc.isNotEmpty;
+                        final String nurseName = hasAlloc
+                            ? (dayAlloc['nurse_name'] ?? 'Assigned')
+                            : '';
+                        final avatarColors =
+                            hasAlloc ? AppTheme.getAvatarColors(nurseName) : null;
+
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: hasAlloc ? Colors.white : Colors.grey.shade50,
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                              color: hasAlloc
+                                  ? Colors.grey.shade200
+                                  : Colors.grey.shade300,
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              SizedBox(
+                                width: 110,
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      dayName,
+                                      style: const TextStyle(
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 13),
+                                    ),
+                                    Text(
+                                      displayDate,
+                                      style: TextStyle(
+                                          fontSize: 11,
+                                          color: Colors.grey.shade600),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              Expanded(
+                                child: hasAlloc
+                                    ? Row(
+                                        children: [
+                                          CircleAvatar(
+                                            radius: 12,
+                                            backgroundColor:
+                                                avatarColors?['bg'] ??
+                                                    AppTheme.primaryColor
+                                                        .withOpacity(0.1),
+                                            child: Text(
+                                              nurseName.isNotEmpty
+                                                  ? nurseName
+                                                      .substring(0, 1)
+                                                      .toUpperCase()
+                                                  : 'N',
+                                              style: TextStyle(
+                                                color: avatarColors?['text'] ??
+                                                    AppTheme.primaryColor,
+                                                fontWeight: FontWeight.bold,
+                                                fontSize: 10,
+                                              ),
+                                            ),
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Expanded(
+                                            child: Text(
+                                              nurseName,
+                                              style: const TextStyle(
+                                                  fontWeight: FontWeight.w600,
+                                                  fontSize: 13),
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          ),
+                                        ],
+                                      )
+                                    : Row(
+                                        children: [
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(
+                                                horizontal: 8, vertical: 3),
+                                            decoration: BoxDecoration(
+                                              color: Colors.amber.shade50,
+                                              borderRadius:
+                                                  BorderRadius.circular(6),
+                                              border: Border.all(
+                                                  color: Colors.amber.shade200),
+                                            ),
+                                            child: Text(
+                                              'On Leave / Unassigned',
+                                              style: TextStyle(
+                                                fontSize: 11,
+                                                fontWeight: FontWeight.w600,
+                                                color: Colors.amber.shade900,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                              ),
+                              if (!_isPastRosterWeek) ...[
+                                if (hasAlloc) ...[
+                                  IconButton(
+                                    icon: const Icon(Icons.swap_horiz_rounded,
+                                        size: 18, color: AppTheme.primaryColor),
+                                    tooltip:
+                                        'Substitute Nurse (Single-Day Leave)',
+                                    onPressed: () async {
+                                      final updated =
+                                          await _showSingleDaySubstitutionDialog(
+                                        ward,
+                                        shift,
+                                        dayDate,
+                                        currentAlloc: dayAlloc,
+                                      );
+                                      if (updated == true && dialogCtx.mounted) {
+                                        setStfState(() {});
+                                      }
+                                    },
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(
+                                        Icons.person_off_outlined,
+                                        size: 18,
+                                        color: Colors.redAccent),
+                                    tooltip:
+                                        'Mark Leave (Unassign Day Only)',
+                                    onPressed: () async {
+                                      final removed =
+                                          await _unassignSingleDayAllocation(
+                                        dayAlloc['id'],
+                                        '$dayName ($displayDate)',
+                                        nurseName,
+                                      );
+                                      if (removed == true && dialogCtx.mounted) {
+                                        setStfState(() {});
+                                      }
+                                    },
+                                  ),
+                                ] else ...[
+                                  TextButton.icon(
+                                    icon: const Icon(
+                                        Icons.person_add_alt_1_rounded,
+                                        size: 15),
+                                    label: const Text('Assign',
+                                        style: TextStyle(fontSize: 12)),
+                                    onPressed: () async {
+                                      final updated =
+                                          await _showSingleDaySubstitutionDialog(
+                                        ward,
+                                        shift,
+                                        dayDate,
+                                        currentAlloc: null,
+                                      );
+                                      if (updated == true && dialogCtx.mounted) {
+                                        setStfState(() {});
+                                      }
+                                    },
+                                  ),
+                                ],
+                              ],
+                            ],
+                          ),
+                        );
+                      }),
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                if (!_isPastRosterWeek)
+                  TextButton.icon(
+                    icon: const Icon(Icons.delete_sweep_rounded,
+                        color: Colors.redAccent, size: 16),
+                    label: const Text('Clear Entire Week',
+                        style: TextStyle(color: Colors.redAccent)),
+                    onPressed: () {
+                      Navigator.pop(dialogCtx);
+                      _deleteRosterEntry(rosterId);
+                    },
+                  ),
+                ElevatedButton(
+                  onPressed: () => Navigator.pop(dialogCtx),
+                  style: AppTheme.primaryButton,
+                  child: const Text('Close'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<bool?> _showSingleDaySubstitutionDialog(
+    String ward,
+    Map<String, dynamic> shift,
+    DateTime date, {
+    Map<String, dynamic>? currentAlloc,
+  }) async {
+    final shiftId = shift['id'];
+    final dateStr = DateFormat('yyyy-MM-dd').format(date);
+    final displayDate = DateFormat('EEEE, dd MMM yyyy').format(date);
+    final String currentNurseName =
+        currentAlloc != null ? (currentAlloc['nurse_name'] ?? 'None') : 'None';
+
+    return showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        String searchQuery = '';
+        String? dialogError;
+        bool isSaving = false;
+        int? savingNurseId;
+
+        return StatefulBuilder(
+          builder: (dialogCtx, setDialogState) {
+            final filteredNurses = _nurses.where((n) {
+              return n.fullname
+                  .toLowerCase()
+                  .contains(searchQuery.toLowerCase());
+            }).toList();
+
+            return AlertDialog(
+              backgroundColor: Colors.white,
+              surfaceTintColor: Colors.transparent,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16)),
+              title: Row(
+                children: [
+                  const Icon(Icons.swap_horiz_rounded,
+                      color: AppTheme.primaryColor),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          currentAlloc != null
+                              ? 'Substitute Nurse (Leave Replacement)'
+                              : 'Assign Single-Day Shift',
+                          style: const TextStyle(
+                              fontSize: 16, fontWeight: FontWeight.bold),
+                        ),
+                        Text(
+                          '$ward Ward - ${shift['name'] ?? 'Shift'} | $displayDate',
+                          style: const TextStyle(
+                              fontSize: 12,
+                              color: AppTheme.textSecondaryColor,
+                              fontWeight: FontWeight.normal),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              content: SizedBox(
+                width: 420,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (currentAlloc != null)
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 8),
+                        margin: const EdgeInsets.only(bottom: 12),
+                        decoration: BoxDecoration(
+                          color: Colors.amber.shade50,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.amber.shade200),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(Icons.person_outline,
+                                size: 16, color: Colors.amber.shade900),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Current Nurse on Leave: $currentNurseName. Select a replacement nurse for $displayDate.',
+                                style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.amber.shade900,
+                                    fontWeight: FontWeight.w500),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    if (dialogError != null) ...[
+                      Container(
+                        width: double.infinity,
+                        margin: const EdgeInsets.only(bottom: 12),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: AppTheme.dangerColor.withOpacity(0.08),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                              color: AppTheme.dangerColor.withOpacity(0.4)),
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Icon(Icons.error_outline,
+                                size: 18, color: AppTheme.dangerColor),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                dialogError!,
+                                style: const TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w500,
+                                    color: AppTheme.dangerColor),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                    TextField(
+                      decoration: InputDecoration(
+                        isDense: true,
+                        hintText: 'Search replacement nurse...',
+                        prefixIcon: const Icon(Icons.search, size: 20),
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 10),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                          borderSide: BorderSide(color: Colors.grey.shade300),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                          borderSide: BorderSide(color: Colors.grey.shade300),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                          borderSide:
+                              const BorderSide(color: AppTheme.primaryColor),
+                        ),
+                      ),
+                      onChanged: (val) {
+                        setDialogState(() {
+                          searchQuery = val;
+                          dialogError = null;
+                        });
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    if (filteredNurses.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 24),
+                        child: Text(
+                          'No nurses found',
+                          style: TextStyle(
+                              color: Colors.grey.shade500, fontSize: 13),
+                        ),
+                      )
+                    else
+                      Container(
+                        constraints: const BoxConstraints(maxHeight: 260),
+                        child: ListView.builder(
+                          shrinkWrap: true,
+                          itemCount: filteredNurses.length,
+                          itemBuilder: (listCtx, index) {
+                            final nurse = filteredNurses[index];
+                            final avatarColors =
+                                AppTheme.getAvatarColors(nurse.fullname);
+
+                            // Check conflict on this specific date
+                            final conflict = _allocations.firstWhere(
+                              (a) =>
+                                  a['nurse_id']?.toString() ==
+                                      nurse.id.toString() &&
+                                  (a['allocation_date']
+                                          ?.toString()
+                                          .startsWith(dateStr) ??
+                                      false) &&
+                                  !(a['ward_type']?.toString().toLowerCase() ==
+                                          ward.toLowerCase() &&
+                                      a['shift_id']?.toString() ==
+                                          shiftId.toString()),
+                              orElse: () => {},
+                            );
+                            final bool hasConflict = conflict.isNotEmpty;
+                            final bool isCurrent = currentAlloc != null &&
+                                currentAlloc['nurse_id']?.toString() ==
+                                    nurse.id.toString();
+
+                            return Card(
+                              elevation: 0,
+                              color: hasConflict
+                                  ? AppTheme.dangerColor.withOpacity(0.04)
+                                  : isCurrent
+                                      ? Colors.grey.shade100
+                                      : Colors.transparent,
+                              margin: const EdgeInsets.only(bottom: 6),
+                              child: InkWell(
+                                borderRadius: BorderRadius.circular(10),
+                                onTap: isSaving || isCurrent
+                                    ? null
+                                    : () async {
+                                        if (hasConflict) {
+                                          setDialogState(() {
+                                            dialogError =
+                                                '${nurse.fullname} is already assigned to ${conflict['ward_type']} Ward (${conflict['shift_name']}) on $dateStr. A staff member cannot be assigned to multiple shifts on the same day.';
+                                          });
+                                          return;
+                                        }
+
+                                        setDialogState(() {
+                                          isSaving = true;
+                                          savingNurseId = nurse.id;
+                                          dialogError = null;
+                                        });
+
+                                        try {
+                                          await _shiftCtrl.createAllocation(
+                                              nurse.id,
+                                              shiftId,
+                                              ward,
+                                              dateStr);
+                                          if (dialogCtx.mounted) {
+                                            Navigator.pop(dialogCtx, true);
+                                          }
+                                          await _loadShiftData();
+                                          if (mounted) {
+                                            ScaffoldMessenger.of(context)
+                                                .showSnackBar(
+                                              SnackBar(
+                                                content: Text(
+                                                  'Successfully assigned ${nurse.fullname} for $displayDate. Remaining weekly schedule preserved.',
+                                                ),
+                                                backgroundColor: Colors.green,
+                                              ),
+                                            );
+                                          }
+                                        } catch (e) {
+                                          final cleanMsg = e
+                                              .toString()
+                                              .replaceAll('Exception: ', '')
+                                              .replaceAll('Error: ', '')
+                                              .trim();
+                                          if (dialogCtx.mounted) {
+                                            setDialogState(() {
+                                              isSaving = false;
+                                              savingNurseId = null;
+                                              dialogError = cleanMsg.isNotEmpty
+                                                  ? cleanMsg
+                                                  : 'Failed to substitute nurse.';
+                                            });
+                                          }
+                                        }
+                                      },
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 8, vertical: 10),
+                                  child: Row(
+                                    children: [
+                                      CircleAvatar(
+                                        radius: 14,
+                                        backgroundColor: avatarColors['bg'],
+                                        child: Text(
+                                          nurse.fullname.isNotEmpty
+                                              ? nurse.fullname[0].toUpperCase()
+                                              : 'N',
+                                          style: TextStyle(
+                                            color: avatarColors['text'],
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 11,
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 10),
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              nurse.fullname,
+                                              style: TextStyle(
+                                                fontWeight: FontWeight.w600,
+                                                fontSize: 13,
+                                                color: hasConflict
+                                                    ? AppTheme.dangerColor
+                                                    : isCurrent
+                                                        ? Colors.grey.shade600
+                                                        : AppTheme
+                                                            .textPrimaryColor,
+                                              ),
+                                            ),
+                                            if (isCurrent)
+                                              const Text(
+                                                'Currently assigned (on leave)',
+                                                style: TextStyle(
+                                                    fontSize: 11,
+                                                    color: Colors.grey),
+                                              )
+                                            else if (hasConflict)
+                                              Text(
+                                                'Busy: ${conflict['ward_type']} Ward (${conflict['shift_name']})',
+                                                style: const TextStyle(
+                                                    fontSize: 11,
+                                                    color:
+                                                        AppTheme.dangerColor),
+                                              ),
+                                          ],
+                                        ),
+                                      ),
+                                      if (isSaving &&
+                                          savingNurseId == nurse.id)
+                                        const SizedBox(
+                                          width: 18,
+                                          height: 18,
+                                          child: CircularProgressIndicator(
+                                              strokeWidth: 2),
+                                        )
+                                      else if (!hasConflict && !isCurrent)
+                                        const Icon(
+                                          Icons.check_circle_outline,
+                                          color: AppTheme.primaryColor,
+                                          size: 18,
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: isSaving
+                      ? null
+                      : () => Navigator.pop(dialogCtx, false),
+                  child: const Text('Cancel'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<bool?> _unassignSingleDayAllocation(
+    int allocId,
+    String displayDate,
+    String nurseName,
+  ) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.white,
+        surfaceTintColor: Colors.transparent,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Mark Single-Day Leave'),
+        content: Text(
+          'Unassign $nurseName for $displayDate?\n\nThis will remove the shift allocation for this single day only. All other days of this week will remain intact.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: AppTheme.dangerButton,
+            child: const Text('Confirm Leave'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      try {
+        await _shiftCtrl.deleteAllocation(allocId);
+        setState(() {
+          _allocations.removeWhere((a) => a['id'] == allocId);
+          _rosters.removeWhere((r) => r['id'] == allocId);
+        });
+        await _loadRosterData();
+        final allocs = await _shiftCtrl.fetchAllocations();
+        if (mounted) {
+          setState(
+              () => _allocations = List<Map<String, dynamic>>.from(allocs));
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'Single-day leave marked for $nurseName ($displayDate). Remaining weekly schedule preserved.',
+              ),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+        return true;
+      } catch (e) {
+        if (mounted) {
+          final cleanMsg = e.toString().replaceAll('Exception: ', '').trim();
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(cleanMsg.isNotEmpty ? cleanMsg : 'Error marking leave.'),
+              backgroundColor: AppTheme.dangerColor,
+            ),
+          );
+        }
+      }
+    }
+    return false;
+  }
+
+  void _showSubstituteNurseDialog(Map<String, dynamic> alloc) {
+    final ward = alloc['ward_type']?.toString() ?? 'General';
+    final shiftId = alloc['shift_id'];
+    final shift = _shifts.firstWhere(
+      (s) => s['id'] == shiftId,
+      orElse: () => {
+        'id': shiftId,
+        'name': alloc['shift_name'] ?? 'Shift',
+      },
+    );
+    final allocDateStr = alloc['allocation_date']?.toString() ?? '';
+    DateTime date = DateTime.now();
+    try {
+      if (allocDateStr.isNotEmpty) {
+        date = DateTime.parse(allocDateStr);
+      }
+    } catch (_) {}
+
+    _showSingleDaySubstitutionDialog(ward, shift, date, currentAlloc: alloc);
+  }
+
+  Widget _buildAssignNurseButton(
+    String ward,
+    int shiftId, {
+    bool isReadOnly = false,
+  }) {
+    if (isReadOnly) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF8FAFC),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: Colors.grey.shade300),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.lock_outline,
+              size: 13,
+              color: Colors.grey.shade500,
+            ),
+            const SizedBox(width: 4),
+            Text(
+              'Locked',
+              style: TextStyle(
+                color: Colors.grey.shade500,
+                fontWeight: FontWeight.w600,
+                fontSize: 11,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       child: GestureDetector(
@@ -4417,10 +6895,22 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   }
 
   void _showNurseSelectionDialog(String ward, int shiftId) {
+    if (_isPastRosterWeek) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Cannot assign shifts for past weeks. Past rosters are locked in read-only mode.'),
+          backgroundColor: AppTheme.dangerColor,
+        ),
+      );
+      return;
+    }
     showDialog(
       context: context,
       builder: (ctx) {
         String searchQuery = '';
+        String? dialogError;
+        bool isSaving = false;
+        int? savingNurseId;
         return StatefulBuilder(
           builder: (dialogCtx, setDialogState) {
             final filteredNurses = _nurses.where((n) {
@@ -4456,6 +6946,44 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
+                    if (dialogError != null) ...[
+                      Container(
+                        width: double.infinity,
+                        margin: const EdgeInsets.only(bottom: 12),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 10,
+                        ),
+                        decoration: BoxDecoration(
+                          color: AppTheme.dangerColor.withOpacity(0.08),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                            color: AppTheme.dangerColor.withOpacity(0.4),
+                          ),
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Icon(
+                              Icons.error_outline,
+                              size: 18,
+                              color: AppTheme.dangerColor,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                dialogError!,
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w500,
+                                  color: AppTheme.dangerColor,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                     TextField(
                       decoration: InputDecoration(
                         isDense: true,
@@ -4483,6 +7011,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                       onChanged: (val) {
                         setDialogState(() {
                           searchQuery = val;
+                          dialogError = null;
                         });
                       },
                     ),
@@ -4510,16 +7039,61 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                               nurse.fullname,
                             );
 
+                            final existingRoster = _rosters.firstWhere(
+                              (r) =>
+                                  r['nurse_id']?.toString() == nurse.id.toString() &&
+                                  !(r['ward_type']?.toString().toLowerCase() == ward.toLowerCase() &&
+                                      r['shift_id']?.toString() == shiftId.toString()),
+                              orElse: () => {},
+                            );
+                            final bool isAlreadyAssigned =
+                                existingRoster.isNotEmpty;
+
                             return Card(
                               elevation: 0,
-                              color: Colors.transparent,
+                              color: isAlreadyAssigned
+                                  ? AppTheme.dangerColor.withOpacity(0.04)
+                                  : Colors.transparent,
                               margin: const EdgeInsets.only(bottom: 6),
                               child: InkWell(
                                 borderRadius: BorderRadius.circular(10),
-                                onTap: () {
-                                  Navigator.pop(ctx);
-                                  _saveRosterEntry(nurse.id, shiftId, ward);
-                                },
+                                onTap: isSaving
+                                    ? null
+                                    : () async {
+                                        if (isAlreadyAssigned) {
+                                          setDialogState(() {
+                                            dialogError =
+                                                '${nurse.fullname} is already assigned to ${existingRoster['ward_type']} Ward (${existingRoster['shift_name']}) for this week. A staff member cannot be assigned to multiple shifts on the same day.';
+                                          });
+                                          return;
+                                        }
+                                        setDialogState(() {
+                                          isSaving = true;
+                                          savingNurseId = nurse.id;
+                                          dialogError = null;
+                                        });
+                                        try {
+                                          await _saveRosterEntry(nurse.id, shiftId, ward);
+                                          if (dialogCtx.mounted) {
+                                            Navigator.pop(dialogCtx);
+                                          }
+                                        } catch (e) {
+                                          final cleanMsg = e
+                                              .toString()
+                                              .replaceAll('Exception: ', '')
+                                              .replaceAll('Error: ', '')
+                                              .trim();
+                                          if (dialogCtx.mounted) {
+                                            setDialogState(() {
+                                              isSaving = false;
+                                              savingNurseId = null;
+                                              dialogError = cleanMsg.isNotEmpty
+                                                  ? cleanMsg
+                                                  : 'Failed to save roster entry.';
+                                            });
+                                          }
+                                        }
+                                      },
                                 child: Padding(
                                   padding: const EdgeInsets.symmetric(
                                     horizontal: 8,
@@ -4559,7 +7133,34 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                                                     AppTheme.textPrimaryColor,
                                               ),
                                             ),
-                                            if (nurse.staffUniqueId != null &&
+                                            if (isAlreadyAssigned) ...[
+                                              const SizedBox(height: 3),
+                                              Container(
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                  horizontal: 6,
+                                                  vertical: 2,
+                                                ),
+                                                decoration: BoxDecoration(
+                                                  color: Colors.amber.shade50,
+                                                  borderRadius:
+                                                      BorderRadius.circular(4),
+                                                  border: Border.all(
+                                                    color:
+                                                        Colors.amber.shade300,
+                                                  ),
+                                                ),
+                                                child: Text(
+                                                  'Assigned: ${existingRoster['ward_type']} (${existingRoster['shift_name']})',
+                                                  style: TextStyle(
+                                                    fontSize: 10,
+                                                    fontWeight: FontWeight.bold,
+                                                    color:
+                                                        Colors.amber.shade900,
+                                                  ),
+                                                ),
+                                              ),
+                                            ] else if (nurse.staffUniqueId != null &&
                                                 nurse
                                                     .staffUniqueId!
                                                     .isNotEmpty) ...[
@@ -4576,11 +7177,27 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                                           ],
                                         ),
                                       ),
-                                      const Icon(
-                                        Icons.chevron_right,
-                                        size: 16,
-                                        color: Colors.grey,
-                                      ),
+                                      if (isSaving && savingNurseId == nurse.id)
+                                        const SizedBox(
+                                          width: 16,
+                                          height: 16,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                            color: AppTheme.primaryColor,
+                                          ),
+                                        )
+                                      else if (isAlreadyAssigned)
+                                        const Icon(
+                                          Icons.block_rounded,
+                                          size: 18,
+                                          color: AppTheme.dangerColor,
+                                        )
+                                      else
+                                        const Icon(
+                                          Icons.chevron_right,
+                                          size: 16,
+                                          color: Colors.grey,
+                                        ),
                                     ],
                                   ),
                                 ),
@@ -4606,7 +7223,15 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   }
 
   Future<void> _autoAllocateThisWeek() async {
-    final WARD_TYPES = ['General', 'ICU', 'Private', 'Semi-Private'];
+    if (_isPastRosterWeek) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Cannot allocate shifts for past weeks. Past rosters are locked in read-only mode.'),
+          backgroundColor: AppTheme.dangerColor,
+        ),
+      );
+      return;
+    }
 
     if (_nurses.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -4657,6 +7282,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
           child: Text(
             'This will automatically assign shifts for the selected week ($weekStartStr - $weekEndStr) '
             'using the available nurses in the system.\n\n'
+            'Staff members will be fairly distributed with at most one shift per day to prevent double-booking.\n\n'
             'Existing assignments in this week will be overwritten.\n\n'
             'Do you want to proceed?',
             softWrap: true,
@@ -4681,113 +7307,32 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
 
     if (confirm != true) return;
 
-    // Define all target slots: each ward combined with each shift
-    List<Map<String, dynamic>> slotsToAssign = [];
-    for (final ward in WARD_TYPES) {
-      for (final shift in _shifts) {
-        slotsToAssign.add({'ward': ward, 'shift_id': shift['id']});
-      }
-    }
-
-    // Build the pool of nurse IDs
-    final List<int> nurseIdsPool = _nurses.map((n) => n.id).toList();
-    final List<int> targetNurseIds = [...nurseIdsPool];
-
-    // If we have fewer unique nurses than slots, backfill/repeat the pool
-    while (targetNurseIds.length < slotsToAssign.length) {
-      targetNurseIds.addAll(nurseIdsPool.isNotEmpty ? nurseIdsPool : [1]);
-    }
-
-    final List<int> finalNurseIds = targetNurseIds.sublist(
-      0,
-      slotsToAssign.length,
-    );
-
-    // Helper to check for continuous shifts
-    bool areShiftsContinuous(Map<String, dynamic> s1, Map<String, dynamic> s2) {
-      final end1 = s1['end_time']?.toString().trim();
-      final start1 = s1['start_time']?.toString().trim();
-      final end2 = s2['end_time']?.toString().trim();
-      final start2 = s2['start_time']?.toString().trim();
-
-      if (end1 == null || start1 == null || end2 == null || start2 == null)
-        return false;
-      return end1 == start2 || end2 == start1;
-    }
-
-    bool isValidRoster(List<int> list) {
-      final Map<int, List<Map<String, dynamic>>> nurseShifts = {};
-      for (int i = 0; i < list.length; i++) {
-        final nurseId = list[i];
-        final slot = slotsToAssign[i];
-        final shiftId = slot['shift_id'] as int;
-
-        final shiftDetail = _shifts.firstWhere(
-          (s) => s['id'] == shiftId,
-          orElse: () => <String, dynamic>{},
-        );
-        if (shiftDetail.isEmpty) continue;
-
-        if (!nurseShifts.containsKey(nurseId)) {
-          nurseShifts[nurseId] = [];
-        }
-
-        for (final assignedShift in nurseShifts[nurseId]!) {
-          if (assignedShift['id'] == shiftId) return false;
-          if (areShiftsContinuous(assignedShift, shiftDetail)) return false;
-        }
-
-        nurseShifts[nurseId]!.add(shiftDetail);
-      }
-      return true;
-    }
-
-    bool foundValid = false;
-    for (int iter = 0; iter < 1000; iter++) {
-      finalNurseIds.shuffle();
-      if (isValidRoster(finalNurseIds)) {
-        foundValid = true;
-        break;
-      }
-    }
-
     final targetWeekStartStr = DateFormat(
       'yyyy-MM-dd',
     ).format(_selectedRosterWeekStart);
     setState(() => _isLoadingShifts = true);
 
     try {
-      int successCount = 0;
-      for (int i = 0; i < slotsToAssign.length; i++) {
-        final slot = slotsToAssign[i];
-        final nurseId = finalNurseIds[i];
-        await _shiftCtrl.saveRosterEntry(
-          nurseId,
-          slot['shift_id'],
-          slot['ward'],
-          targetWeekStartStr,
-        );
-        successCount++;
-      }
-
+      final res = await _shiftCtrl.autoAllocateRosters(targetWeekStartStr);
       await _loadRosterData();
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              'Successfully allocated $successCount shifts for this week!',
+              res['message'] ?? 'Successfully allocated shifts for this week!',
             ),
             backgroundColor: Colors.green,
           ),
         );
       }
     } catch (e) {
+      final cleanMsg = e.toString().replaceAll('Exception: ', '').trim();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Failed to auto-allocate: $e'),
-            backgroundColor: Colors.red,
+            content: Text(cleanMsg.isNotEmpty ? cleanMsg : 'Failed to auto-allocate shifts.'),
+            backgroundColor: AppTheme.dangerColor,
           ),
         );
       }
@@ -4799,6 +7344,17 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   }
 
   Future<void> _autoShuffleNextWeek() async {
+    final nextWeekStart = _selectedRosterWeekStart.add(const Duration(days: 7));
+    if (nextWeekStart.isBefore(_currentWeekStart)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Cannot allocate shifts for past weeks. Past rosters are locked in read-only mode.'),
+          backgroundColor: AppTheme.dangerColor,
+        ),
+      );
+      return;
+    }
+
     final WARD_TYPES = ['General', 'ICU', 'Private', 'Semi-Private'];
 
     // 1. Collect active assignments of the current week
@@ -4830,7 +7386,6 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
         return;
       }
 
-      // Auto-populate all slots to allocate automatically
       for (final ward in WARD_TYPES) {
         for (final shift in _shifts) {
           activeSlots.add({
@@ -4844,7 +7399,6 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     }
 
     // 2. Confirm dialog with the user showing next week's dates
-    final nextWeekStart = _selectedRosterWeekStart.add(const Duration(days: 7));
     final nextWeekStartStr = DateFormat('dd MMM').format(nextWeekStart);
     final nextWeekEndStr = DateFormat(
       'dd MMM yyyy',
@@ -4872,10 +7426,12 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
           isEmptyRoster
               ? 'This will automatically allocate shifts for the next week ($nextWeekStartStr - $nextWeekEndStr) '
                     'using the available nurses in the system.\n\n'
+                    'Staff members will be fairly distributed with at most one shift per day to prevent double-booking.\n\n'
                     'Existing assignments in the target week will be overwritten.\n\n'
                     'Do you want to proceed?'
               : 'This will automatically assign shifts for the next week ($nextWeekStartStr - $nextWeekEndStr) '
-                    'by shuffling the ${activeSlots.length} nurse assignments from the current week.\n\n'
+                    'by shuffling nurse assignments from the current week.\n\n'
+                    'Staff members will be fairly distributed with at most one shift per day to prevent double-booking.\n\n'
                     'Existing assignments in the target week will be overwritten.\n\n'
                     'Do you want to proceed?',
         ),
@@ -4900,137 +7456,69 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
 
     if (confirm != true) return;
 
-    // 3. Create a pool of unique nurse IDs to assign to the active slots
-    // We prioritize the nurse IDs that are already active this week
-    final List<int> activeNurseIds = activeSlots
-        .map((s) => s['nurse_id'] as int)
-        .toSet()
-        .toList();
-    activeNurseIds.remove(0); // Remove placeholder id
-    final List<int> targetNurseIds = [...activeNurseIds];
-
-    // If we have fewer unique active nurses than active slots, backfill from the general nurses pool
-    if (targetNurseIds.length < activeSlots.length) {
-      for (final nurse in _nurses) {
-        if (!targetNurseIds.contains(nurse.id)) {
-          targetNurseIds.add(nurse.id);
-        }
-        if (targetNurseIds.length >= activeSlots.length) {
-          break;
-        }
-      }
-    }
-
-    // If we STILL don't have enough unique nurses, repeat the pool
-    final List<int> fallbackNursePool = _nurses.map((n) => n.id).toList();
-    while (targetNurseIds.length < activeSlots.length) {
-      targetNurseIds.addAll(
-        fallbackNursePool.isNotEmpty ? fallbackNursePool : [1],
-      );
-    }
-
-    final List<int> finalNurseIds = targetNurseIds.sublist(
-      0,
-      activeSlots.length,
-    );
-
-    // Helper to verify if a nurse is assigned to continuous shifts or duplicates on the same shift
-    bool areShiftsContinuous(Map<String, dynamic> s1, Map<String, dynamic> s2) {
-      final end1 = s1['end_time']?.toString().trim();
-      final start1 = s1['start_time']?.toString().trim();
-      final end2 = s2['end_time']?.toString().trim();
-      final start2 = s2['start_time']?.toString().trim();
-
-      if (end1 == null || start1 == null || end2 == null || start2 == null)
-        return false;
-
-      // Check if s1 ends when s2 starts, or s2 ends when s1 starts
-      return end1 == start2 || end2 == start1;
-    }
-
-    bool isValidRoster(List<int> list) {
-      final Map<int, List<Map<String, dynamic>>> nurseShifts = {};
-      for (int i = 0; i < list.length; i++) {
-        final nurseId = list[i];
-        final slot = activeSlots[i];
-        final shiftId = slot['shift_id'] as int;
-
-        final shiftDetail = _shifts.firstWhere(
-          (s) => s['id'] == shiftId,
-          orElse: () => <String, dynamic>{},
-        );
-        if (shiftDetail.isEmpty) continue;
-
-        if (!nurseShifts.containsKey(nurseId)) {
-          nurseShifts[nurseId] = [];
-        }
-
-        for (final assignedShift in nurseShifts[nurseId]!) {
-          if (assignedShift['id'] == shiftId) return false;
-          if (areShiftsContinuous(assignedShift, shiftDetail)) return false;
-        }
-
-        nurseShifts[nurseId]!.add(shiftDetail);
-      }
-      return true;
-    }
-
-    bool foundValid = false;
-    for (int iter = 0; iter < 1000; iter++) {
-      finalNurseIds.shuffle();
-      if (isValidRoster(finalNurseIds)) {
-        foundValid = true;
-        break;
-      }
-    }
-
-    // 4. Save slots for next week using the shuffled list
     final targetWeekStartStr = DateFormat('yyyy-MM-dd').format(nextWeekStart);
 
     setState(() => _isLoadingShifts = true);
 
     try {
-      int successCount = 0;
-      for (int i = 0; i < activeSlots.length; i++) {
-        final slot = activeSlots[i];
-        final nurseId = finalNurseIds[i];
-        await _shiftCtrl.saveRosterEntry(
-          nurseId,
-          slot['shift_id'],
-          slot['ward'],
-          targetWeekStartStr,
-        );
-        successCount++;
-      }
-
-      // Navigate to next week to show results immediately
-      setState(() {
-        _selectedRosterWeekStart = nextWeekStart;
-      });
-      await _loadRosterData();
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              isEmptyRoster
-                  ? 'Successfully allocated $successCount shifts for the next week!'
-                  : 'Successfully shuffled and assigned $successCount shifts for the next week!',
+      if (isEmptyRoster) {
+        final res = await _shiftCtrl.autoAllocateRosters(targetWeekStartStr);
+        setState(() {
+          _selectedRosterWeekStart = nextWeekStart;
+        });
+        await _loadRosterData();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(res['message'] ?? 'Successfully allocated shifts for the next week!'),
+              backgroundColor: Colors.green,
             ),
-            backgroundColor: Colors.green,
-          ),
-        );
+          );
+        }
+      } else {
+        // Shuffle existing unique nurses without double-booking
+        final List<int> uniqueNursePool = _nurses.map((n) => n.id).toList()..shuffle();
+        final int assignCount = activeSlots.length < uniqueNursePool.length
+            ? activeSlots.length
+            : uniqueNursePool.length;
+        final List<int> finalNurseIds = uniqueNursePool.sublist(0, assignCount);
+
+        int successCount = 0;
+        for (int i = 0; i < assignCount; i++) {
+          final slot = activeSlots[i];
+          final nurseId = finalNurseIds[i];
+          await _shiftCtrl.saveRosterEntry(
+            nurseId,
+            slot['shift_id'],
+            slot['ward'],
+            targetWeekStartStr,
+          );
+          successCount++;
+        }
+
+        setState(() {
+          _selectedRosterWeekStart = nextWeekStart;
+        });
+        await _loadRosterData();
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'Successfully shuffled and assigned $successCount shifts for the next week without double-booking!',
+              ),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
       }
     } catch (e) {
+      final cleanMsg = e.toString().replaceAll('Exception: ', '').trim();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(
-              isEmptyRoster
-                  ? 'Failed to auto-allocate: $e'
-                  : 'Error shuffling roster: $e',
-            ),
-            backgroundColor: Colors.red,
+            content: Text(cleanMsg.isNotEmpty ? cleanMsg : 'Error shuffling roster.'),
+            backgroundColor: AppTheme.dangerColor,
           ),
         );
       }
@@ -5089,7 +7577,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                         crossAxisAlignment: WrapCrossAlignment.center,
                         children: [
                           OutlinedButton.icon(
-                            onPressed: _autoAllocateThisWeek,
+                            onPressed: _isPastRosterWeek ? null : _autoAllocateThisWeek,
                             icon: const Icon(Icons.auto_awesome, size: 14),
                             label: const Text(
                               'Auto-Allocate This Week',
@@ -5113,7 +7601,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                             ),
                           ),
                           OutlinedButton.icon(
-                            onPressed: _autoShuffleNextWeek,
+                            onPressed: _isPastRosterWeek ? null : _autoShuffleNextWeek,
                             icon: const Icon(Icons.shuffle_rounded, size: 14),
                             label: const Text(
                               'Shuffle Next Week',
@@ -5176,13 +7664,44 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                                       ),
                                     ],
                                   ),
-                                  child: Text(
-                                    '$weekStartStr - $weekEndStr',
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 13,
-                                      color: AppTheme.primaryColor,
-                                    ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(
+                                        '$weekStartStr - $weekEndStr',
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 13,
+                                          color: AppTheme.primaryColor,
+                                        ),
+                                      ),
+                                      if (_isPastRosterWeek) ...[
+                                        const SizedBox(width: 6),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                          decoration: BoxDecoration(
+                                            color: Colors.amber.shade100,
+                                            borderRadius: BorderRadius.circular(4),
+                                            border: Border.all(color: Colors.amber.shade400),
+                                          ),
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Icon(Icons.lock_outline, size: 11, color: Colors.amber.shade900),
+                                              const SizedBox(width: 2),
+                                              Text(
+                                                'Locked',
+                                                style: TextStyle(
+                                                  fontSize: 10,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: Colors.amber.shade900,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ],
+                                    ],
                                   ),
                                 ),
                                 IconButton(
@@ -5237,7 +7756,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                         crossAxisAlignment: WrapCrossAlignment.center,
                         children: [
                           OutlinedButton.icon(
-                            onPressed: _autoAllocateThisWeek,
+                            onPressed: _isPastRosterWeek ? null : _autoAllocateThisWeek,
                             icon: const Icon(Icons.auto_awesome, size: 14),
                             label: const Text(
                               'Auto-Allocate This Week',
@@ -5261,7 +7780,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                             ),
                           ),
                           OutlinedButton.icon(
-                            onPressed: _autoShuffleNextWeek,
+                            onPressed: _isPastRosterWeek ? null : _autoShuffleNextWeek,
                             icon: const Icon(Icons.shuffle_rounded, size: 14),
                             label: const Text(
                               'Auto-Shuffle Next Week',
@@ -5326,13 +7845,44 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                                       ),
                                     ],
                                   ),
-                                  child: Text(
-                                    '$weekStartStr - $weekEndStr',
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 13,
-                                      color: AppTheme.primaryColor,
-                                    ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(
+                                        '$weekStartStr - $weekEndStr',
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 13,
+                                          color: AppTheme.primaryColor,
+                                        ),
+                                      ),
+                                      if (_isPastRosterWeek) ...[
+                                        const SizedBox(width: 6),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                          decoration: BoxDecoration(
+                                            color: Colors.amber.shade100,
+                                            borderRadius: BorderRadius.circular(4),
+                                            border: Border.all(color: Colors.amber.shade400),
+                                          ),
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Icon(Icons.lock_outline, size: 11, color: Colors.amber.shade900),
+                                              const SizedBox(width: 2),
+                                              Text(
+                                                'Locked',
+                                                style: TextStyle(
+                                                  fontSize: 10,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: Colors.amber.shade900,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ],
+                                    ],
                                   ),
                                 ),
                                 IconButton(
@@ -5419,7 +7969,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                             ),
                             const SizedBox(height: 12),
                             ElevatedButton.icon(
-                              onPressed: _autoAllocateThisWeek,
+                              onPressed: _isPastRosterWeek ? null : _autoAllocateThisWeek,
                               icon: const Icon(Icons.auto_awesome, size: 14),
                               label: const Text('Auto-Allocate This Week'),
                               style: ElevatedButton.styleFrom(
@@ -5464,7 +8014,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                                   ),
                                   const SizedBox(height: 10),
                                   ElevatedButton.icon(
-                                    onPressed: _autoAllocateThisWeek,
+                                    onPressed: _isPastRosterWeek ? null : _autoAllocateThisWeek,
                                     icon: const Icon(
                                       Icons.auto_awesome,
                                       size: 14,
@@ -5651,7 +8201,12 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                       alignment: Alignment.center,
                       padding: const EdgeInsets.symmetric(horizontal: 6),
                       child: hasAssignment
-                          ? _buildAssignedNurseChip(nurseName, roster['id'])
+                          ? _buildAssignedNurseChip(
+                              nurseName,
+                              roster['id'],
+                              ward: ward,
+                              shift: shift,
+                            )
                           : _buildAssignNurseButton(ward, shift['id']),
                     ),
                   );
@@ -5706,7 +8261,12 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                       ),
                     ),
                     hasAssignment
-                        ? _buildAssignedNurseChip(nurseName, roster['id'])
+                        ? _buildAssignedNurseChip(
+                            nurseName,
+                            roster['id'],
+                            ward: ward,
+                            shift: shift,
+                          )
                         : SizedBox(
                             width: 140,
                             child: _buildAssignNurseButton(ward, shift['id']),
@@ -5857,17 +8417,21 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   }
 
   void _showAllocateNurseDialog() {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
     setState(() {
       _selectedAllocNurse = null;
       _selectedAllocShift = null;
       _selectedAllocWard = null;
-      _selectedAllocDate = DateTime.now(); // default to today's date
+      _selectedAllocDate = today; // default to today's date
     });
 
     showDialog(
       context: context,
       builder: (ctx) {
         final WARD_TYPES = ['General', 'ICU', 'Private', 'Semi-Private'];
+        String? allocError;
+        bool isSaving = false;
         return StatefulBuilder(
           builder: (dialogCtx, setDialogState) {
             return AlertDialog(
@@ -5896,8 +8460,71 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      if (allocError != null) ...[
+                        Container(
+                          width: double.infinity,
+                          margin: const EdgeInsets.only(bottom: 12),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 10,
+                          ),
+                          decoration: BoxDecoration(
+                            color: AppTheme.dangerColor.withOpacity(0.08),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: AppTheme.dangerColor.withOpacity(0.4),
+                            ),
+                          ),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Icon(
+                                Icons.error_outline,
+                                size: 18,
+                                color: AppTheme.dangerColor,
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  allocError!,
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w500,
+                                    color: AppTheme.dangerColor,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                       const Divider(height: 16),
-                      const SizedBox(height: 16),
+                      const SizedBox(height: 12),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFEFF6FF),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: const Color(0xFFBFDBFE)),
+                        ),
+                        child: const Row(
+                          children: [
+                            Icon(Icons.info_outline, size: 16, color: AppTheme.primaryColor),
+                            SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Shift allocation is for IPD only.',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color: AppTheme.primaryColor,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 14),
 
                       // Dropdown Nurse
                       const Text(
@@ -5955,12 +8582,16 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                         value:
                             _selectedAllocShift == null ||
                                 !_shifts.any(
-                                  (s) => s['id'] == _selectedAllocShift!['id'],
+                                  (s) => s['id'] == _selectedAllocShift!['id'] &&
+                                      s['is_active'] != false &&
+                                      (s['status'] == null || s['status'].toString().toLowerCase() == 'active'),
                                 )
                             ? null
                             : _selectedAllocShift!['id'].toString(),
                         dropdownMap: {
-                          for (var s in _shifts)
+                          for (var s in _shifts.where((s) =>
+                              s['is_active'] != false &&
+                              (s['status'] == null || s['status'].toString().toLowerCase() == 'active')))
                             s['id'].toString():
                                 '${s['name']} (${_formatTo12Hour(s['start_time'])} - ${_formatTo12Hour(s['end_time'])})',
                         },
@@ -6010,19 +8641,50 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                       const SizedBox(height: 6),
                       InkWell(
                         onTap: () async {
+                          final now = DateTime.now();
+                          final today = DateTime(now.year, now.month, now.day);
+                          final initial = _selectedAllocDate != null &&
+                                  !_selectedAllocDate!.isBefore(today)
+                              ? _selectedAllocDate!
+                              : today;
+
                           final picked = await showDatePicker(
                             context: dialogCtx,
-                            initialDate: _selectedAllocDate ?? DateTime.now(),
-                            firstDate: DateTime.now().subtract(
-                              const Duration(days: 30),
-                            ),
+                            initialDate: initial,
+                            firstDate: today,
                             lastDate: DateTime.now().add(
-                              const Duration(days: 90),
+                              const Duration(days: 365),
                             ),
+                            initialEntryMode: DatePickerEntryMode.calendarOnly,
+                            selectableDayPredicate: (day) {
+                              final d = DateTime(day.year, day.month, day.day);
+                              return !d.isBefore(today);
+                            },
+                            builder: (context, child) {
+                              return Theme(
+                                data: Theme.of(context).copyWith(
+                                  colorScheme: const ColorScheme.light(
+                                    primary: AppTheme.primaryColor,
+                                    onPrimary: Colors.white,
+                                    onSurface: AppTheme.textPrimaryColor,
+                                  ),
+                                ),
+                                child: child!,
+                              );
+                            },
                           );
                           if (picked != null) {
-                            setDialogState(() => _selectedAllocDate = picked);
-                            setState(() => _selectedAllocDate = picked);
+                            if (picked.isBefore(today)) {
+                              setDialogState(() {
+                                allocError = 'Allocation date cannot be in the past.';
+                              });
+                            } else {
+                              setDialogState(() {
+                                _selectedAllocDate = picked;
+                                allocError = null;
+                              });
+                              setState(() => _selectedAllocDate = picked);
+                            }
                           }
                         },
                         child: Container(
@@ -6091,27 +8753,101 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                     minimumSize: const Size(130, 48),
                     elevation: 0,
                   ),
-                  onPressed: () async {
-                    if (_selectedAllocNurse == null ||
-                        _selectedAllocShift == null ||
-                        _selectedAllocWard == null ||
-                        _selectedAllocDate == null) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text(
-                            'Please select Nurse, Shift, Ward, and Date.',
+                  onPressed: isSaving
+                      ? null
+                      : () async {
+                          final now = DateTime.now();
+                          final today = DateTime(now.year, now.month, now.day);
+
+                          if (_selectedAllocNurse == null ||
+                              _selectedAllocShift == null ||
+                              _selectedAllocWard == null ||
+                              _selectedAllocDate == null) {
+                            setDialogState(() {
+                              allocError =
+                                  'Please select Nurse, Shift, Ward, and Date.';
+                            });
+                            return;
+                          }
+
+                          final allocDay = DateTime(
+                            _selectedAllocDate!.year,
+                            _selectedAllocDate!.month,
+                            _selectedAllocDate!.day,
+                          );
+                          if (allocDay.isBefore(today)) {
+                            setDialogState(() {
+                              allocError =
+                                  'Allocation date cannot be in the past.';
+                            });
+                            return;
+                          }
+
+                          setDialogState(() {
+                            isSaving = true;
+                            allocError = null;
+                          });
+
+                          final dateStr = DateFormat('yyyy-MM-dd')
+                              .format(_selectedAllocDate!);
+
+                          try {
+                            await _shiftCtrl.createAllocation(
+                              _selectedAllocNurse!.id,
+                              _selectedAllocShift!['id'],
+                              _selectedAllocWard!,
+                              dateStr,
+                            );
+                            if (mounted) {
+                              Navigator.pop(dialogCtx);
+                              setState(() {
+                                _selectedAllocNurse = null;
+                                _selectedAllocShift = null;
+                                _selectedAllocWard = null;
+                                _selectedAllocDate = null;
+                              });
+                              // Partial async update of allocations without full page reload
+                              _shiftCtrl.fetchAllocations().then((allocs) {
+                                if (mounted) {
+                                  setState(() => _allocations =
+                                      List<Map<String, dynamic>>.from(allocs));
+                                }
+                              });
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content:
+                                      Text('Nurse allocated successfully!'),
+                                  backgroundColor: Colors.green,
+                                ),
+                              );
+                            }
+                          } catch (e) {
+                            final cleanMsg = e
+                                .toString()
+                                .replaceAll('Exception: ', '')
+                                .replaceAll('Error: ', '')
+                                .trim();
+                            setDialogState(() {
+                              isSaving = false;
+                              allocError = cleanMsg.isNotEmpty
+                                  ? cleanMsg
+                                  : 'Failed to allocate nurse. Please check for scheduling conflicts.';
+                            });
+                          }
+                        },
+                  child: isSaving
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
                           ),
+                        )
+                      : const Text(
+                          'Save Allocation',
+                          style: TextStyle(fontWeight: FontWeight.bold),
                         ),
-                      );
-                      return;
-                    }
-                    Navigator.pop(dialogCtx);
-                    _submitAllocation();
-                  },
-                  child: const Text(
-                    'Save Allocation',
-                    style: TextStyle(fontWeight: FontWeight.bold),
-                  ),
                 ),
               ],
             );
@@ -6123,6 +8859,23 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
 
   Widget _buildAllocationLogsCard() {
     final bool isMobile = MediaQuery.of(context).size.width < 900;
+
+    // Collect unique nurse names for filter dropdown
+    final Set<String> nurseNameSet = {};
+    for (final a in _allocations) {
+      final name = a['nurse_name']?.toString().trim();
+      if (name != null && name.isNotEmpty) {
+        nurseNameSet.add(name);
+      }
+    }
+    for (final n in _nurses) {
+      if (n.fullname.trim().isNotEmpty) {
+        nurseNameSet.add(n.fullname.trim());
+      }
+    }
+    final List<String> uniqueNurseNames = nurseNameSet.toList()..sort();
+
+    final filteredList = _filteredAllocations;
 
     return Card(
       elevation: 0,
@@ -6153,16 +8906,299 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                     ),
                   ),
                 ),
+                if (_allocations.isNotEmpty)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF1F5F9),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      '${filteredList.length} of ${_allocations.length} records',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: AppTheme.textSecondaryColor,
+                      ),
+                    ),
+                  ),
               ],
             ),
             const Divider(height: 24),
-            if (_allocations.isEmpty)
+
+            // --- History Filter Controls (by Nurse, Date Range, or Week) ---
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                // 1. Instant Text Search
+                SizedBox(
+                  width: isMobile ? double.infinity : 200,
+                  height: 40,
+                  child: TextField(
+                    controller: _allocLogSearchCtrl,
+                    decoration: InputDecoration(
+                      hintText: 'Search nurse, ward...',
+                      hintStyle: const TextStyle(fontSize: 12, color: AppTheme.textSecondaryColor),
+                      prefixIcon: const Icon(Icons.search, size: 16, color: AppTheme.textSecondaryColor),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 0),
+                      filled: true,
+                      fillColor: const Color(0xFFF1F5F9),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide.none,
+                      ),
+                    ),
+                    onChanged: (val) {
+                      setState(() {
+                        _allocLogSearchQuery = val;
+                      });
+                    },
+                  ),
+                ),
+
+                // 2. Nurse Filter Dropdown
+                Container(
+                  height: 40,
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  decoration: BoxDecoration(
+                    color: _allocLogNurseFilter != 'All'
+                        ? AppTheme.primaryColor.withOpacity(0.06)
+                        : const Color(0xFFF1F5F9),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: _allocLogNurseFilter != 'All'
+                          ? AppTheme.primaryColor
+                          : Colors.grey.shade300,
+                    ),
+                  ),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<String>(
+                      value: _allocLogNurseFilter,
+                      icon: const Icon(
+                        Icons.keyboard_arrow_down_rounded,
+                        size: 18,
+                        color: AppTheme.textSecondaryColor,
+                      ),
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: _allocLogNurseFilter != 'All'
+                            ? AppTheme.primaryColor
+                            : AppTheme.textPrimaryColor,
+                      ),
+                      dropdownColor: Colors.white,
+                      borderRadius: BorderRadius.circular(8),
+                      onChanged: (val) {
+                        if (val != null) {
+                          setState(() => _allocLogNurseFilter = val);
+                        }
+                      },
+                      items: [
+                        const DropdownMenuItem(value: 'All', child: Text('All Nurses')),
+                        ...uniqueNurseNames.map(
+                          (name) => DropdownMenuItem(value: name, child: Text(name)),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+
+                // 3. Date / Date Range Picker
+                InkWell(
+                  onTap: () async {
+                    final picked = await showDateRangePicker(
+                      context: context,
+                      firstDate: DateTime(2020),
+                      lastDate: DateTime(2035),
+                      initialDateRange: _allocLogDateRangeFilter,
+                      builder: (context, child) {
+                        return Center(
+                          child: ConstrainedBox(
+                            constraints: const BoxConstraints(
+                              maxWidth: 440,
+                              maxHeight: 560,
+                            ),
+                            child: Container(
+                              clipBehavior: Clip.antiAlias,
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(16),
+                                boxShadow: const [
+                                  BoxShadow(
+                                    color: Colors.black26,
+                                    blurRadius: 20,
+                                    offset: Offset(0, 8),
+                                  ),
+                                ],
+                              ),
+                              child: Theme(
+                                data: Theme.of(context).copyWith(
+                                  colorScheme: const ColorScheme.light(
+                                    primary: AppTheme.primaryColor,
+                                    onPrimary: Colors.white,
+                                    onSurface: AppTheme.textPrimaryColor,
+                                  ),
+                                ),
+                                child: child!,
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    );
+                    if (picked != null) {
+                      setState(() {
+                        _allocLogDateRangeFilter = picked;
+                        _allocLogWeekFilter = null;
+                        _allocLogWeekPreset = 'All';
+                      });
+                    }
+                  },
+                  borderRadius: BorderRadius.circular(8),
+                  child: Container(
+                    height: 40,
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                    decoration: BoxDecoration(
+                      color: _allocLogDateRangeFilter != null
+                          ? AppTheme.primaryColor.withOpacity(0.06)
+                          : const Color(0xFFF1F5F9),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: _allocLogDateRangeFilter != null
+                            ? AppTheme.primaryColor
+                            : Colors.grey.shade300,
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.date_range_rounded,
+                          size: 15,
+                          color: _allocLogDateRangeFilter != null
+                              ? AppTheme.primaryColor
+                              : AppTheme.textSecondaryColor,
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          _allocLogDateRangeFilter != null
+                              ? '${DateFormat('dd MMM').format(_allocLogDateRangeFilter!.start)} - ${DateFormat('dd MMM').format(_allocLogDateRangeFilter!.end)}'
+                              : 'Filter by Date',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: _allocLogDateRangeFilter != null
+                                ? AppTheme.primaryColor
+                                : AppTheme.textSecondaryColor,
+                          ),
+                        ),
+                        if (_allocLogDateRangeFilter != null) ...[
+                          const SizedBox(width: 4),
+                          GestureDetector(
+                            onTap: () {
+                              setState(() => _allocLogDateRangeFilter = null);
+                            },
+                            child: const Icon(Icons.close, size: 14, color: AppTheme.primaryColor),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+
+                // 4. Week Filter Preset Dropdown
+                Container(
+                  height: 40,
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  decoration: BoxDecoration(
+                    color: _allocLogWeekPreset != 'All'
+                        ? AppTheme.primaryColor.withOpacity(0.06)
+                        : const Color(0xFFF1F5F9),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: _allocLogWeekPreset != 'All'
+                          ? AppTheme.primaryColor
+                          : Colors.grey.shade300,
+                    ),
+                  ),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<String>(
+                      value: _allocLogWeekPreset,
+                      icon: const Icon(
+                        Icons.keyboard_arrow_down_rounded,
+                        size: 18,
+                        color: AppTheme.textSecondaryColor,
+                      ),
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: _allocLogWeekPreset != 'All'
+                            ? AppTheme.primaryColor
+                            : AppTheme.textPrimaryColor,
+                      ),
+                      dropdownColor: Colors.white,
+                      borderRadius: BorderRadius.circular(8),
+                      onChanged: (val) {
+                        if (val != null) {
+                          _applyWeekPreset(val);
+                        }
+                      },
+                      items: const [
+                        DropdownMenuItem(value: 'All', child: Text('All Weeks')),
+                        DropdownMenuItem(value: 'This Week', child: Text('This Week')),
+                        DropdownMenuItem(value: 'Last Week', child: Text('Last Week')),
+                        DropdownMenuItem(value: 'Next Week', child: Text('Next Week')),
+                      ],
+                    ),
+                  ),
+                ),
+
+                // 5. Clear Filters Button
+                if (_hasActiveAllocLogFilters)
+                  TextButton.icon(
+                    onPressed: _resetAllocLogFilters,
+                    icon: const Icon(
+                      Icons.filter_alt_off_rounded,
+                      size: 14,
+                      color: AppTheme.dangerColor,
+                    ),
+                    label: const Text(
+                      'Clear Filters',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        color: AppTheme.dangerColor,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 16),
+
+            if (filteredList.isEmpty)
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 40),
                 child: Center(
-                  child: Text(
-                    'No shift allocations logged.',
-                    style: TextStyle(color: Colors.grey.shade500),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.filter_list_off, size: 36, color: Colors.grey.shade400),
+                      const SizedBox(height: 10),
+                      Text(
+                        _allocations.isEmpty
+                            ? 'No shift allocations logged.'
+                            : 'No allocation logs match the selected filter criteria.',
+                        style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
+                      ),
+                      if (_hasActiveAllocLogFilters) ...[
+                        const SizedBox(height: 10),
+                        TextButton(
+                          onPressed: _resetAllocLogFilters,
+                          child: const Text('Reset Filters'),
+                        ),
+                      ],
+                    ],
                   ),
                 ),
               )
@@ -6195,24 +9231,20 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                               headingRowHeight: 52,
                               dataRowMinHeight: 58,
                               dataRowMaxHeight: 72,
-                              headingRowColor: WidgetStateProperty.all(
-                                const Color(0xFFEDF2F7),
+                              headingRowColor: WidgetStateProperty.resolveWith(
+                                (states) => AppTheme.getTableHeadingRowColor(context),
                               ),
-                              headingTextStyle: const TextStyle(
-                                fontWeight: FontWeight.w600,
-                                color: Color(0xFF64748B),
-                                fontSize: 13,
-                              ),
-                              columns: const [
-                                DataColumn(label: Text('Date')),
-                                DataColumn(label: Text('Nurse')),
-                                DataColumn(label: Text('Ward')),
-                                DataColumn(label: Text('Shift')),
-                                DataColumn(label: Text('Timings')),
-                                DataColumn(label: Text('Status')),
-                                DataColumn(label: Text('Actions')),
+                              headingTextStyle: AppTheme.tableHeadingTextStyle(context),
+                              columns: [
+                                AppTheme.dataColumnHeader(context: context, label: 'Date', icon: Icons.calendar_today_outlined),
+                                AppTheme.dataColumnHeader(context: context, label: 'Nurse', icon: Icons.person_outline),
+                                AppTheme.dataColumnHeader(context: context, label: 'Ward', icon: Icons.meeting_room_outlined),
+                                AppTheme.dataColumnHeader(context: context, label: 'Shift', icon: Icons.schedule_outlined),
+                                AppTheme.dataColumnHeader(context: context, label: 'Timings', icon: Icons.access_time),
+                                AppTheme.dataColumnHeader(context: context, label: 'Status', icon: Icons.verified_outlined),
+                                AppTheme.dataColumnHeader(context: context, label: 'Actions', icon: Icons.settings_outlined),
                               ],
-                              rows: _allocations.map((alloc) {
+                              rows: filteredList.map((alloc) {
                                 final dateStr = alloc['allocation_date'] != null
                                     ? DateFormat('dd-MM-yyyy').format(
                                         DateTime.parse(
@@ -6261,14 +9293,33 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                                       ),
                                     ),
                                     DataCell(
-                                      IconButton(
-                                        icon: const Icon(
-                                          Icons.delete_outline,
-                                          color: Colors.redAccent,
-                                          size: 18,
-                                        ),
-                                        onPressed: () =>
-                                            _deleteAllocation(alloc['id']),
+                                      Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          IconButton(
+                                            icon: const Icon(
+                                              Icons.swap_horiz_rounded,
+                                              color: AppTheme.primaryColor,
+                                              size: 19,
+                                            ),
+                                            tooltip:
+                                                'Substitute Nurse (Leave Replacement)',
+                                            onPressed: () =>
+                                                _showSubstituteNurseDialog(
+                                                    alloc),
+                                          ),
+                                          IconButton(
+                                            icon: const Icon(
+                                              Icons.delete_outline,
+                                              color: Colors.redAccent,
+                                              size: 18,
+                                            ),
+                                            tooltip:
+                                                'Remove Single-Day Allocation',
+                                            onPressed: () =>
+                                                _deleteAllocation(alloc['id']),
+                                          ),
+                                        ],
                                       ),
                                     ),
                                   ],
@@ -7073,6 +10124,9 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
 
   void _showShiftDialog(Map<String, dynamic>? shift) {
     final nameCtrl = TextEditingController(text: shift?['name'] ?? '');
+    String? nameError;
+    String? dialogError;
+    bool isSaving = false;
     TimeOfDay? startTime = shift != null
         ? TimeOfDay(
             hour: int.parse(shift['start_time'].split(':')[0]),
@@ -7095,71 +10149,129 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
               title: Text(
                 shift == null ? 'Define Shift Schedule' : 'Edit Shift Schedule',
               ),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  TextField(
-                    controller: nameCtrl,
-                    maxLength: 20,
-                    decoration: const InputDecoration(
-                      labelText: 'Shift Name',
-                      hintText: 'e.g., Morning, Evening, Night',
-                      counterText: '',
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (dialogError != null) ...[
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: AppTheme.dangerColor.withOpacity(0.08),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: AppTheme.dangerColor.withOpacity(0.4)),
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Icon(Icons.error_outline, size: 20, color: AppTheme.dangerColor),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                dialogError!,
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w500,
+                                  color: AppTheme.dangerColor,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                    ],
+                    TextField(
+                      controller: nameCtrl,
+                      maxLength: 30,
+                      inputFormatters: [
+                        FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z\s]')),
+                      ],
+                      onChanged: (val) {
+                        setDialogState(() {
+                          dialogError = null;
+                          final trimmed = val.trim();
+                          if (trimmed.isEmpty) {
+                            nameError = 'Shift Name is required.';
+                          } else if (trimmed.length < 2) {
+                            nameError = 'Shift Name must be at least 2 characters.';
+                          } else if (RegExp(r'[0-9]').hasMatch(val)) {
+                            nameError = 'Numbers are not allowed in Shift Name.';
+                          } else if (RegExp(r'[^a-zA-Z\s]').hasMatch(val)) {
+                            nameError = 'Special characters are not allowed in Shift Name.';
+                          } else {
+                            nameError = null;
+                          }
+                        });
+                      },
+                      decoration: InputDecoration(
+                        labelText: 'Shift Name',
+                        hintText: 'e.g., Morning, Evening, Night',
+                        counterText: '',
+                        errorText: nameError,
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 16),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        startTime != null
-                            ? 'Start Time: ${startTime!.format(dialogCtx)}'
-                            : 'Choose Start Time',
-                        style: const TextStyle(fontWeight: FontWeight.w600),
-                      ),
-                      TextButton(
-                        onPressed: () async {
-                          final picked = await showTimePicker(
-                            context: dialogCtx,
-                            initialTime:
-                                startTime ??
-                                const TimeOfDay(hour: 8, minute: 0),
-                          );
-                          if (picked != null) {
-                            setDialogState(() => startTime = picked);
-                          }
-                        },
-                        child: const Text('Pick'),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        endTime != null
-                            ? 'End Time: ${endTime!.format(dialogCtx)}'
-                            : 'Choose End Time',
-                        style: const TextStyle(fontWeight: FontWeight.w600),
-                      ),
-                      TextButton(
-                        onPressed: () async {
-                          final picked = await showTimePicker(
-                            context: dialogCtx,
-                            initialTime:
-                                endTime ?? const TimeOfDay(hour: 16, minute: 0),
-                          );
-                          if (picked != null) {
-                            setDialogState(() => endTime = picked);
-                          }
-                        },
-                        child: const Text('Pick'),
-                      ),
-                    ],
-                  ),
-                ],
+                    const SizedBox(height: 16),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          startTime != null
+                              ? 'Start Time: ${startTime!.format(dialogCtx)}'
+                              : 'Choose Start Time',
+                          style: const TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                        TextButton(
+                          onPressed: () async {
+                            final picked = await showTimePicker(
+                              context: dialogCtx,
+                              initialTime:
+                                  startTime ??
+                                  const TimeOfDay(hour: 8, minute: 0),
+                            );
+                            if (picked != null) {
+                              setDialogState(() {
+                                startTime = picked;
+                                dialogError = null;
+                              });
+                            }
+                          },
+                          child: const Text('Pick'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          endTime != null
+                              ? 'End Time: ${endTime!.format(dialogCtx)}'
+                              : 'Choose End Time',
+                          style: const TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                        TextButton(
+                          onPressed: () async {
+                            final picked = await showTimePicker(
+                              context: dialogCtx,
+                              initialTime:
+                                  endTime ?? const TimeOfDay(hour: 16, minute: 0),
+                            );
+                            if (picked != null) {
+                              setDialogState(() {
+                                endTime = picked;
+                                dialogError = null;
+                              });
+                            }
+                          },
+                          child: const Text('Pick'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
               actions: [
                 OutlinedButton(
@@ -7175,7 +10287,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                     ),
                     minimumSize: const Size(130, 48),
                   ),
-                  onPressed: () => Navigator.pop(dialogCtx),
+                  onPressed: isSaving ? null : () => Navigator.pop(dialogCtx),
                   child: const Text(
                     'Cancel',
                     style: TextStyle(fontWeight: FontWeight.bold),
@@ -7195,58 +10307,125 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                     minimumSize: const Size(130, 48),
                     elevation: 0,
                   ),
-                  onPressed: () async {
-                    if (nameCtrl.text.isEmpty ||
-                        startTime == null ||
-                        endTime == null) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('Please complete all shift details.'),
-                        ),
-                      );
-                      return;
-                    }
+                  onPressed: isSaving
+                      ? null
+                      : () async {
+                          final trimmedName = nameCtrl.text.trim();
+                          String? validationMsg;
+                          if (trimmedName.isEmpty) {
+                            validationMsg = 'Shift Name is required.';
+                          } else if (trimmedName.length < 2) {
+                            validationMsg = 'Shift Name must be at least 2 characters.';
+                          } else if (trimmedName.length > 30) {
+                            validationMsg = 'Shift Name cannot exceed 30 characters.';
+                          } else if (RegExp(r'[0-9]').hasMatch(nameCtrl.text)) {
+                            validationMsg = 'Numbers are not allowed in Shift Name.';
+                          } else if (RegExp(r'[^a-zA-Z\s]').hasMatch(nameCtrl.text)) {
+                            validationMsg = 'Special characters are not allowed in Shift Name.';
+                          } else if (startTime == null || endTime == null) {
+                            validationMsg = 'Please complete both start and end time.';
+                          } else if (startTime!.hour == endTime!.hour && startTime!.minute == endTime!.minute) {
+                            validationMsg = 'Shift start time and end time cannot be identical.';
+                          }
 
-                    final startStr =
-                        '${startTime!.hour.toString().padLeft(2, '0')}:${startTime!.minute.toString().padLeft(2, '0')}:00';
-                    final endStr =
-                        '${endTime!.hour.toString().padLeft(2, '0')}:${endTime!.minute.toString().padLeft(2, '0')}:00';
+                          if (validationMsg != null) {
+                            setDialogState(() {
+                              if (trimmedName.isEmpty ||
+                                  trimmedName.length < 2 ||
+                                  RegExp(r'[0-9]').hasMatch(nameCtrl.text) ||
+                                  RegExp(r'[^a-zA-Z\s]').hasMatch(nameCtrl.text)) {
+                                nameError = validationMsg;
+                              }
+                              dialogError = validationMsg;
+                            });
+                            return;
+                          }
 
-                    try {
-                      if (shift == null) {
-                        await _shiftCtrl.createShift(
-                          nameCtrl.text,
-                          startStr,
-                          endStr,
-                        );
-                      } else {
-                        await _shiftCtrl.updateShift(
-                          shift['id'],
-                          nameCtrl.text,
-                          startStr,
-                          endStr,
-                        );
-                      }
-                      Navigator.pop(dialogCtx);
-                      _loadShiftData();
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('Shift schedule saved successfully!'),
+                          final startStr =
+                              '${startTime!.hour.toString().padLeft(2, '0')}:${startTime!.minute.toString().padLeft(2, '0')}:00';
+                          final endStr =
+                              '${endTime!.hour.toString().padLeft(2, '0')}:${endTime!.minute.toString().padLeft(2, '0')}:00';
+                          final startPrefix = startStr.substring(0, 5);
+                          final endPrefix = endStr.substring(0, 5);
+
+                          // Check duplicate timings in existing shifts
+                          final dup = _shifts.firstWhere(
+                            (s) {
+                              if (shift != null && s['id'] == shift['id']) return false;
+                              final sStart = s['start_time'].toString().substring(0, 5);
+                              final sEnd = s['end_time'].toString().substring(0, 5);
+                              return sStart == startPrefix && sEnd == endPrefix;
+                            },
+                            orElse: () => {},
+                          );
+                          if (dup.isNotEmpty) {
+                            final dupName = dup['name'] ?? 'existing shift';
+                            setDialogState(() {
+                              dialogError =
+                                  'A shift with this time range already exists ($dupName). Duplicate shift timings are not allowed.';
+                            });
+                            return;
+                          }
+
+                          try {
+                            setDialogState(() {
+                              isSaving = true;
+                              dialogError = null;
+                            });
+                            if (shift == null) {
+                              await _shiftCtrl.createShift(
+                                trimmedName,
+                                startStr,
+                                endStr,
+                              );
+                            } else {
+                              await _shiftCtrl.updateShift(
+                                shift['id'],
+                                trimmedName,
+                                startStr,
+                                endStr,
+                              );
+                            }
+                            Navigator.pop(dialogCtx);
+                            // Partial async update of shifts without full page reload
+                            _shiftCtrl.fetchShifts().then((shifts) {
+                              if (mounted) {
+                                setState(() => _shifts = List<Map<String, dynamic>>.from(shifts));
+                              }
+                            });
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Shift schedule saved successfully!'),
+                                backgroundColor: Colors.green,
+                              ),
+                            );
+                          } catch (e) {
+                            final cleanMsg = e
+                                .toString()
+                                .replaceAll('Exception: ', '')
+                                .replaceAll('Error: ', '')
+                                .trim();
+                            setDialogState(() {
+                              isSaving = false;
+                              dialogError = cleanMsg.isNotEmpty
+                                  ? cleanMsg
+                                  : 'Unable to save shift schedule. Please try again.';
+                            });
+                          }
+                        },
+                  child: isSaving
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Text(
+                          'Save',
+                          style: TextStyle(fontWeight: FontWeight.bold),
                         ),
-                      );
-                    } catch (e) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('Error: $e'),
-                          backgroundColor: Colors.red,
-                        ),
-                      );
-                    }
-                  },
-                  child: const Text(
-                    'Save',
-                    style: TextStyle(fontWeight: FontWeight.bold),
-                  ),
                 ),
               ],
             );
@@ -7289,13 +10468,26 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
       ),
     );
     if (confirm == true) {
+      // Instantaneous optimistic removal
+      setState(() {
+        _shifts.removeWhere((s) => s['id'] == id);
+      });
       try {
         await _shiftCtrl.deleteShift(id);
-        _loadShiftData();
+        _shiftCtrl.fetchShifts().then((shifts) {
+          if (mounted) {
+            setState(() => _shifts = List<Map<String, dynamic>>.from(shifts));
+          }
+        });
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Shift schedule deleted successfully!')),
         );
       } catch (e) {
+        _shiftCtrl.fetchShifts().then((shifts) {
+          if (mounted) {
+            setState(() => _shifts = List<Map<String, dynamic>>.from(shifts));
+          }
+        });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
         );
@@ -7356,7 +10548,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
         content: const SizedBox(
           width: 440,
           child: Text(
-            'Are you sure you want to delete this nurse shift allocation?',
+            'Are you sure you want to delete this nurse shift allocation? If part of a weekly roster, only this single day will be removed and the remaining days will be preserved.',
             softWrap: true,
           ),
         ),
@@ -7377,14 +10569,30 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     if (confirm == true) {
       try {
         await _shiftCtrl.deleteAllocation(id);
-        _loadShiftData();
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Allocation deleted successfully!')),
-        );
+        if (mounted) {
+          setState(() {
+            _allocations.removeWhere((a) => a['id'] == id);
+            _rosters.removeWhere((r) => r['id'] == id);
+          });
+          _loadShiftData();
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                  'Allocation removed successfully! Remaining weekly roster preserved.'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
       } catch (e) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
-        );
+        if (mounted) {
+          final cleanMsg = e.toString().replaceAll('Exception: ', '').trim();
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(cleanMsg.isNotEmpty ? cleanMsg : 'Error deleting allocation.'),
+              backgroundColor: AppTheme.dangerColor,
+            ),
+          );
+        }
       }
     }
   }
@@ -7409,13 +10617,9 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     setState(() {
       _isMedCatalogLoading = true;
       _medCatalogError = null;
-      _medCatalogCurrentPage = 0;
     });
     try {
-      final search = _medCatalogSearch.trim();
-      final url = search.isEmpty
-          ? '$_medBaseUrl/inventory/medicine-catalog'
-          : '$_medBaseUrl/inventory/medicine-catalog?search=${Uri.encodeComponent(search)}';
+      final url = '$_medBaseUrl/inventory/medicine-catalog';
       final resp = await ApiService.get(url);
       final body = ApiService.decodeJsonResponse(resp);
       if (mounted) {
@@ -7440,8 +10644,10 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   Future<void> _showAddMedicationDialog(bool isMobile) async {
     final formKey = GlobalKey<FormState>();
     final nameCtrl = TextEditingController();
-    final unitCtrl = TextEditingController(text: 'tabs');
-    String selectedCategory = 'Medicine';
+    final unitCtrl = TextEditingController();
+    final stockCtrl = TextEditingController();
+    final thresholdCtrl = TextEditingController();
+    String? selectedCategory;
     bool isControlled = false;
     bool isSaving = false;
 
@@ -7484,9 +10690,9 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                   ),
                 ),
                 const SizedBox(width: 12),
-                const Text(
-                  'Add New Medication',
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
+                Text(
+                  context.tr('add_new_medication', fallback: 'Add New Medication'),
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
                 ),
               ],
             ),
@@ -7505,7 +10711,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                         TextSpan(
                           children: [
                             TextSpan(
-                              text: 'Medication Name ',
+                              text: '${context.tr('medicine_name', fallback: 'Medication Name')} ',
                               style: TextStyle(
                                 fontFamily: 'Manrope',
                                 color: Colors.grey.shade700,
@@ -7564,7 +10770,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
 
                       // Category
                       CustomDropdownSearch(
-                        label: 'Category',
+                        label: context.tr('med_category', fallback: 'Category'),
                         requiredMark: true,
                         hint: 'Select category',
                         value: selectedCategory,
@@ -7581,10 +10787,10 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
 
                       // Default Unit
                       CustomDropdownSearch(
-                        label: 'Default Unit',
+                        label: context.tr('med_default_unit', fallback: 'Default Unit'),
                         requiredMark: true,
                         hint: 'Select unit',
-                        value: unitCtrl.text,
+                        value: unitCtrl.text.isEmpty ? null : unitCtrl.text,
                         dropdownItems: defaultUnits,
                         onChanged: (val) {
                           if (val != null) setD(() => unitCtrl.text = val);
@@ -7593,6 +10799,94 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                             v == null || v.isEmpty || !defaultUnits.contains(v)
                             ? 'Please select a unit'
                             : null,
+                      ),
+                      const SizedBox(height: 14),
+
+                      // Stock Quantity & Alert Threshold
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  context.tr('med_initial_stock', fallback: 'Initial Stock Quantity'),
+                                  style: TextStyle(
+                                    fontFamily: 'Manrope',
+                                    color: Colors.grey.shade700,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                TextFormField(
+                                  controller: stockCtrl,
+                                  keyboardType: TextInputType.number,
+                                  inputFormatters: [
+                                    FilteringTextInputFormatter.digitsOnly,
+                                    LengthLimitingTextInputFormatter(6),
+                                  ],
+                                  decoration: AppTheme.standardInputDecoration(
+                                    label: null,
+                                    prefixIcon: Icons.inventory_2_outlined,
+                                    hintText: 'Enter stock quantity',
+                                  ).copyWith(counterText: ''),
+                                  validator: (v) {
+                                    if (v == null || v.trim().isEmpty) {
+                                      return 'Please enter initial stock quantity';
+                                    }
+                                    final num = int.tryParse(v.trim());
+                                    if (num == null || num < 0) {
+                                      return 'Please enter a valid stock quantity (>= 0)';
+                                    }
+                                    return null;
+                                  },
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 14),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  context.tr('med_low_stock_alert', fallback: 'Low Stock Alert'),
+                                  style: TextStyle(
+                                    fontFamily: 'Manrope',
+                                    color: Colors.grey.shade700,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                TextFormField(
+                                  controller: thresholdCtrl,
+                                  keyboardType: TextInputType.number,
+                                  inputFormatters: [
+                                    FilteringTextInputFormatter.digitsOnly,
+                                    LengthLimitingTextInputFormatter(6),
+                                  ],
+                                  decoration: AppTheme.standardInputDecoration(
+                                    label: null,
+                                    prefixIcon: Icons.warning_amber_outlined,
+                                    hintText: 'Enter alert threshold',
+                                  ).copyWith(counterText: ''),
+                                  validator: (v) {
+                                    if (v == null || v.trim().isEmpty) {
+                                      return 'Please enter low stock alert threshold';
+                                    }
+                                    final num = int.tryParse(v.trim());
+                                    if (num == null || num <= 0) {
+                                      return 'Please enter a threshold greater than 0';
+                                    }
+                                    return null;
+                                  },
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
                       ),
                       const SizedBox(height: 16),
 
@@ -7620,16 +10914,16 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  const Text(
-                                    'Controlled Substance',
-                                    style: TextStyle(
+                                  Text(
+                                    context.tr('med_controlled_substance', fallback: 'Controlled Substance'),
+                                    style: const TextStyle(
                                       fontWeight: FontWeight.w600,
                                       fontSize: 13,
                                       color: AppTheme.textPrimaryColor,
                                     ),
                                   ),
                                   Text(
-                                    'Requires special prescription & dispensing log',
+                                    context.tr('med_controlled_desc', fallback: 'Requires special prescription & dispensing log'),
                                     style: TextStyle(
                                       fontSize: 11,
                                       color: Colors.grey.shade500,
@@ -7655,12 +10949,30 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
               TextButton(
                 onPressed: () => Navigator.pop(ctx, false),
                 style: AppTheme.cancelButton,
-                child: const Text('Cancel'),
+                child: Text(context.tr('cancel', fallback: 'Cancel')),
               ),
               ElevatedButton(
                 onPressed: isSaving
                     ? null
                     : () async {
+                        if (selectedCategory == null || selectedCategory!.isEmpty) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Please select a category'),
+                              backgroundColor: AppTheme.dangerColor,
+                            ),
+                          );
+                          return;
+                        }
+                        if (unitCtrl.text.trim().isEmpty) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Please select a default unit'),
+                              backgroundColor: AppTheme.dangerColor,
+                            ),
+                          );
+                          return;
+                        }
                         if (!formKey.currentState!.validate()) return;
                         setD(() => isSaving = true);
                         try {
@@ -7668,9 +10980,11 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                             '$_medBaseUrl/inventory/medicine-catalog',
                             {
                               'name': nameCtrl.text.trim(),
-                              'category': selectedCategory,
-                              'default_unit': unitCtrl.text,
+                              'category': selectedCategory!,
+                              'default_unit': unitCtrl.text.trim(),
                               'is_controlled': isControlled,
+                              'stock_quantity': int.tryParse(stockCtrl.text.trim()) ?? 0,
+                              'threshold': int.tryParse(thresholdCtrl.text.trim()) ?? 10,
                             },
                           );
                           final respBody = ApiService.decodeJsonResponse(resp);
@@ -7707,7 +11021,6 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                           }
                         }
                       },
-
                 style: AppTheme.primaryButton,
                 child: isSaving
                     ? const SizedBox(
@@ -7718,7 +11031,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                           color: Colors.white,
                         ),
                       )
-                    : const Text('Add Medication'),
+                    : Text(context.tr('add_medication', fallback: 'Add Medication')),
               ),
             ],
           );
@@ -7737,6 +11050,12 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     final nameCtrl = TextEditingController(text: med['name']?.toString() ?? '');
     final unitCtrl = TextEditingController(
       text: med['default_unit']?.toString() ?? 'tabs',
+    );
+    final stockCtrl = TextEditingController(
+      text: (med['stock_quantity'] ?? 0).toString(),
+    );
+    final thresholdCtrl = TextEditingController(
+      text: (med['threshold'] ?? 10).toString(),
     );
     String selectedCategory = med['category']?.toString() ?? 'Medicine';
     bool isControlled = med['is_controlled'] == true;
@@ -7898,6 +11217,86 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                             ? 'Please select a unit'
                             : null,
                       ),
+                      const SizedBox(height: 14),
+
+                      // Stock Quantity & Alert Threshold
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Current Stock Quantity',
+                                  style: TextStyle(
+                                    fontFamily: 'Manrope',
+                                    color: Colors.grey.shade700,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                TextFormField(
+                                  controller: stockCtrl,
+                                  keyboardType: TextInputType.number,
+                                  inputFormatters: [
+                                    FilteringTextInputFormatter.digitsOnly,
+                                    LengthLimitingTextInputFormatter(6),
+                                  ],
+                                  decoration: AppTheme.standardInputDecoration(
+                                    label: null,
+                                    prefixIcon: Icons.inventory_2_outlined,
+                                    hintText: '0',
+                                  ).copyWith(counterText: ''),
+                                  validator: (v) {
+                                    if (v == null || v.trim().isEmpty) {
+                                      return 'Required';
+                                    }
+                                    return null;
+                                  },
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 14),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Low Stock Alert',
+                                  style: TextStyle(
+                                    fontFamily: 'Manrope',
+                                    color: Colors.grey.shade700,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                TextFormField(
+                                  controller: thresholdCtrl,
+                                  keyboardType: TextInputType.number,
+                                  inputFormatters: [
+                                    FilteringTextInputFormatter.digitsOnly,
+                                    LengthLimitingTextInputFormatter(6),
+                                  ],
+                                  decoration: AppTheme.standardInputDecoration(
+                                    label: null,
+                                    prefixIcon: Icons.warning_amber_outlined,
+                                    hintText: '10',
+                                  ).copyWith(counterText: ''),
+                                  validator: (v) {
+                                    if (v == null || v.trim().isEmpty) {
+                                      return 'Required';
+                                    }
+                                    return null;
+                                  },
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
                       const SizedBox(height: 16),
 
                       // Controlled Substance Switch
@@ -7975,6 +11374,8 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                               'category': selectedCategory,
                               'default_unit': unitCtrl.text,
                               'is_controlled': isControlled,
+                              'stock_quantity': int.tryParse(stockCtrl.text.trim()) ?? 0,
+                              'threshold': int.tryParse(thresholdCtrl.text.trim()) ?? 10,
                             },
                           );
                           final respBody = ApiService.decodeJsonResponse(resp);
@@ -8030,7 +11431,13 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
       ),
     );
 
-    if (result == true) _loadMedicationCatalog();
+    if (result == true) {
+      if (_medCatalogSearch.isNotEmpty) {
+        _medSearchController.clear();
+        _medCatalogSearch = '';
+      }
+      _loadMedicationCatalog();
+    }
   }
 
   Future<void> _deleteMedication(Map<String, dynamic> med) async {
@@ -8118,12 +11525,14 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     }
 
     final filtered = _medicationCatalog.where((m) {
+      final nameStr = m['name']?.toString() ?? '';
+      final catStr = m['category']?.toString() ?? '';
       final matchesSearch =
           _medCatalogSearch.trim().isEmpty ||
-          (m['name'] as String).toLowerCase().contains(
+          nameStr.toLowerCase().contains(
             _medCatalogSearch.toLowerCase(),
           ) ||
-          (m['category'] as String).toLowerCase().contains(
+          catStr.toLowerCase().contains(
             _medCatalogSearch.toLowerCase(),
           );
 
@@ -8131,6 +11540,14 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
         if (_selectedMedCategoryFilter == 'Total') return true;
         if (_selectedMedCategoryFilter == 'Controlled') {
           return m['is_controlled'] == true;
+        }
+        if (_selectedMedCategoryFilter == 'In Stock') {
+          final qty = int.tryParse(m['stock_quantity']?.toString() ?? '0') ?? 0;
+          return qty > 0;
+        }
+        if (_selectedMedCategoryFilter == 'Out of Stock') {
+          final qty = int.tryParse(m['stock_quantity']?.toString() ?? '0') ?? 0;
+          return qty == 0;
         }
         return m['category'] == _selectedMedCategoryFilter;
       }();
@@ -8196,6 +11613,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                             Icons.medication_outlined,
                             AppTheme.primaryColor,
                             'Total',
+                            context.tr('med_total', fallback: 'Total'),
                             '${_medicationCatalog.length}',
                           ),
                           const SizedBox(width: 8),
@@ -8203,6 +11621,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                             Icons.science_outlined,
                             AppTheme.secondaryColor,
                             'Medicine',
+                            context.tr('medicines', fallback: 'Medicine'),
                             '${_medicationCatalog.where((m) => m['category'] == 'Medicine').length}',
                           ),
                           const SizedBox(width: 8),
@@ -8210,6 +11629,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                             Icons.local_hospital_outlined,
                             const Color(0xFF7C3AED),
                             'ICU Consumable',
+                            context.tr('med_icu_consumable', fallback: 'ICU Consumable'),
                             '${_medicationCatalog.where((m) => m['category'] == 'ICU Consumable').length}',
                           ),
                           const SizedBox(width: 8),
@@ -8217,13 +11637,31 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                             Icons.content_cut_outlined,
                             const Color(0xFFF59E0B),
                             'Surgical Item',
+                            context.tr('med_surgical_item', fallback: 'Surgical Item'),
                             '${_medicationCatalog.where((m) => m['category'] == 'Surgical Item').length}',
+                          ),
+                          const SizedBox(width: 8),
+                          _buildMedStatChip(
+                            Icons.check_circle_outline,
+                            AppTheme.secondaryColor,
+                            'In Stock',
+                            context.tr('med_in_stock', fallback: 'In Stock'),
+                            '${_medicationCatalog.where((m) => (int.tryParse(m['stock_quantity']?.toString() ?? '0') ?? 0) > 0).length}',
+                          ),
+                          const SizedBox(width: 8),
+                          _buildMedStatChip(
+                            Icons.remove_circle_outline,
+                            AppTheme.dangerColor,
+                            'Out of Stock',
+                            context.tr('med_out_of_stock', fallback: 'Out of Stock'),
+                            '${_medicationCatalog.where((m) => (int.tryParse(m['stock_quantity']?.toString() ?? '0') ?? 0) == 0).length}',
                           ),
                           const SizedBox(width: 8),
                           _buildMedStatChip(
                             Icons.lock_outline,
                             AppTheme.dangerColor,
                             'Controlled',
+                            context.tr('med_controlled_substance', fallback: 'Controlled'),
                             '${_medicationCatalog.where((m) => m['is_controlled'] == true).length}',
                           ),
                         ],
@@ -8245,9 +11683,9 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                           ),
                         ),
                         icon: const Icon(Icons.add, size: 16),
-                        label: const Text(
-                          'Add Medication',
-                          style: TextStyle(
+                        label: Text(
+                          context.tr('add_medication', fallback: 'Add Medication'),
+                          style: const TextStyle(
                             fontSize: 13,
                             fontWeight: FontWeight.w600,
                           ),
@@ -8268,6 +11706,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                               Icons.medication_outlined,
                               AppTheme.primaryColor,
                               'Total',
+                              context.tr('med_total', fallback: 'Total'),
                               '${_medicationCatalog.length}',
                             ),
                             const SizedBox(width: 8),
@@ -8275,6 +11714,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                               Icons.science_outlined,
                               AppTheme.secondaryColor,
                               'Medicine',
+                              context.tr('medicines', fallback: 'Medicine'),
                               '${_medicationCatalog.where((m) => m['category'] == 'Medicine').length}',
                             ),
                             const SizedBox(width: 8),
@@ -8282,6 +11722,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                               Icons.local_hospital_outlined,
                               const Color(0xFF7C3AED),
                               'ICU Consumable',
+                              context.tr('med_icu_consumable', fallback: 'ICU Consumable'),
                               '${_medicationCatalog.where((m) => m['category'] == 'ICU Consumable').length}',
                             ),
                             const SizedBox(width: 8),
@@ -8289,13 +11730,31 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                               Icons.content_cut_outlined,
                               const Color(0xFFF59E0B),
                               'Surgical Item',
+                              context.tr('med_surgical_item', fallback: 'Surgical Item'),
                               '${_medicationCatalog.where((m) => m['category'] == 'Surgical Item').length}',
+                            ),
+                            const SizedBox(width: 8),
+                            _buildMedStatChip(
+                              Icons.check_circle_outline,
+                              AppTheme.secondaryColor,
+                              'In Stock',
+                              context.tr('med_in_stock', fallback: 'In Stock'),
+                              '${_medicationCatalog.where((m) => (int.tryParse(m['stock_quantity']?.toString() ?? '0') ?? 0) > 0).length}',
+                            ),
+                            const SizedBox(width: 8),
+                            _buildMedStatChip(
+                              Icons.remove_circle_outline,
+                              AppTheme.dangerColor,
+                              'Out of Stock',
+                              context.tr('med_out_of_stock', fallback: 'Out of Stock'),
+                              '${_medicationCatalog.where((m) => (int.tryParse(m['stock_quantity']?.toString() ?? '0') ?? 0) == 0).length}',
                             ),
                             const SizedBox(width: 8),
                             _buildMedStatChip(
                               Icons.lock_outline,
                               AppTheme.dangerColor,
                               'Controlled',
+                              context.tr('med_controlled_substance', fallback: 'Controlled'),
                               '${_medicationCatalog.where((m) => m['is_controlled'] == true).length}',
                             ),
                           ],
@@ -8318,9 +11777,9 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                           ),
                         ),
                         icon: const Icon(Icons.add, size: 16),
-                        label: const Text(
-                          'Add Medication',
-                          style: TextStyle(
+                        label: Text(
+                          context.tr('add_medication', fallback: 'Add Medication'),
+                          style: const TextStyle(
                             fontSize: 13,
                             fontWeight: FontWeight.w600,
                           ),
@@ -8374,9 +11833,9 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
               ),
             ),
             const SizedBox(width: 10),
-            const Text(
-              'Medication Catalog',
-              style: TextStyle(
+            Text(
+              context.tr('medication_catalog_title', fallback: 'Medication Catalog'),
+              style: const TextStyle(
                 fontSize: 20,
                 fontWeight: FontWeight.bold,
                 color: AppTheme.textPrimaryColor,
@@ -8385,9 +11844,9 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
           ],
         ),
         const SizedBox(height: 4),
-        const Text(
-          'Manage the master list of medications used across the system',
-          style: TextStyle(fontSize: 12, color: AppTheme.textSecondaryColor),
+        Text(
+          context.tr('medication_catalog_desc', fallback: 'Manage the master list of medications used across the system'),
+          style: const TextStyle(fontSize: 12, color: AppTheme.textSecondaryColor),
         ),
       ],
     );
@@ -8401,7 +11860,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
           AppTheme.standardInputDecoration(
             label: null,
             prefixIcon: Icons.search,
-            hintText: 'Search medications...',
+            hintText: context.tr('search_by_medicine_name', fallback: 'Search by medicine name'),
           ).copyWith(
             filled: true,
             fillColor: Colors.white,
@@ -8450,22 +11909,25 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
           _medCatalogCurrentPage = 0;
         });
       },
-      onSubmitted: (_) => _loadMedicationCatalog(),
+      onSubmitted: (_) {
+        setState(() {});
+      },
     );
   }
 
   Widget _buildMedStatChip(
     IconData icon,
     Color color,
-    String label,
+    String filterKey,
+    String displayLabel,
     String count,
   ) {
-    final isSelected = _selectedMedCategoryFilter == label;
+    final isSelected = _selectedMedCategoryFilter == filterKey;
     return InkWell(
       borderRadius: BorderRadius.circular(8),
       onTap: () {
         setState(() {
-          _selectedMedCategoryFilter = label;
+          _selectedMedCategoryFilter = filterKey;
           _medCatalogCurrentPage = 0;
         });
       },
@@ -8495,7 +11957,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             Icon(icon, color: isSelected ? Colors.white : color, size: 14),
             const SizedBox(width: 6),
             Text(
-              label,
+              displayLabel,
               style: TextStyle(
                 fontSize: 12,
                 color: isSelected ? Colors.white : color,
@@ -8570,8 +12032,8 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
           const SizedBox(height: 16),
           Text(
             _medCatalogSearch.isNotEmpty
-                ? 'No medications match "$_medCatalogSearch"'
-                : 'No medications in catalog yet',
+                ? '${context.tr('med_no_match', fallback: 'No medications match')} "$_medCatalogSearch"'
+                : context.tr('med_empty', fallback: 'No medications in catalog yet'),
             style: TextStyle(
               fontSize: 15,
               color: Colors.grey.shade500,
@@ -8580,7 +12042,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
           ),
           const SizedBox(height: 8),
           Text(
-            'Click "Add Medication" to add a new entry',
+            context.tr('med_click_add', fallback: 'Click "Add Medication" to add a new entry'),
             style: TextStyle(fontSize: 12, color: Colors.grey.shade400),
           ),
         ],
@@ -8606,55 +12068,42 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             // Table Header
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-              decoration: const BoxDecoration(
-                color: Color(0xFFF8FAFC),
-                border: Border(bottom: BorderSide(color: AppTheme.borderColor)),
-              ),
-              child: const Row(
+              decoration: AppTheme.tableHeaderDecoration(context),
+              child: Row(
                 children: [
-                  Expanded(
+                  AppTheme.tableHeaderCell(
+                    context: context,
+                    label: '#  ${context.tr('medicine_name', fallback: 'Medication Name')}',
+                    icon: Icons.medication_outlined,
                     flex: 4,
-                    child: Text(
-                      '#  Medication Name',
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                        color: AppTheme.textSecondaryColor,
-                      ),
-                    ),
                   ),
-                  Expanded(
+                  AppTheme.tableHeaderCell(
+                    context: context,
+                    label: context.tr('med_category', fallback: 'Category'),
+                    icon: Icons.category_outlined,
                     flex: 2,
-                    child: Text(
-                      'Category',
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                        color: AppTheme.textSecondaryColor,
-                      ),
-                    ),
                   ),
-                  Expanded(
+                  AppTheme.tableHeaderCell(
+                    context: context,
+                    label: context.tr('med_unit', fallback: 'Unit'),
+                    icon: Icons.straighten_outlined,
                     flex: 2,
-                    child: Text(
-                      'Unit',
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                        color: AppTheme.textSecondaryColor,
-                      ),
-                    ),
+                  ),
+                  AppTheme.tableHeaderCell(
+                    context: context,
+                    label: context.tr('med_stock_avail', fallback: 'Stock Availability'),
+                    icon: Icons.inventory_2_outlined,
+                    flex: 2,
                   ),
                   SizedBox(
                     width: 88,
-                    child: Text(
-                      'Actions',
+                    child: AppTheme.tableHeaderCell(
+                      context: context,
+                      label: context.tr('med_actions', fallback: 'Actions'),
+                      icon: Icons.settings_outlined,
+                      flex: 0,
                       textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                        color: AppTheme.textSecondaryColor,
-                      ),
+                      mainAxisAlignment: MainAxisAlignment.center,
                     ),
                   ),
                 ],
@@ -8676,6 +12125,8 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                       : category == 'ICU Consumable'
                       ? const Color(0xFF7C3AED)
                       : const Color(0xFFF59E0B);
+                  final stockQty = int.tryParse(med['stock_quantity']?.toString() ?? '0') ?? 0;
+                  final inStock = stockQty > 0;
                   return Container(
                     color: i.isEven ? Colors.white : const Color(0xFFFAFBFC),
                     padding: const EdgeInsets.symmetric(
@@ -8727,6 +12178,41 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                             style: const TextStyle(
                               fontSize: 13,
                               color: AppTheme.textSecondaryColor,
+                            ),
+                          ),
+                        ),
+                        Expanded(
+                          flex: 2,
+                          child: Align(
+                            alignment: Alignment.centerLeft,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 3,
+                              ),
+                              decoration: BoxDecoration(
+                                color: inStock
+                                    ? AppTheme.secondaryColor.withOpacity(0.1)
+                                    : AppTheme.dangerColor.withOpacity(0.08),
+                                borderRadius: BorderRadius.circular(6),
+                                border: Border.all(
+                                  color: inStock
+                                      ? AppTheme.secondaryColor.withOpacity(0.3)
+                                      : AppTheme.dangerColor.withOpacity(0.2),
+                                ),
+                              ),
+                              child: Text(
+                                inStock
+                                    ? '${context.tr('med_in_stock', fallback: 'In Stock')} ($stockQty)'
+                                    : context.tr('med_out_of_stock', fallback: 'Out of Stock'),
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                  color: inStock
+                                      ? AppTheme.secondaryColor
+                                      : AppTheme.dangerColor,
+                                ),
+                              ),
                             ),
                           ),
                         ),
@@ -8900,6 +12386,39 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                                     ],
                                   ),
                                 ),
+                              Builder(
+                                builder: (_) {
+                                  final stockQty = int.tryParse(med['stock_quantity']?.toString() ?? '0') ?? 0;
+                                  final inStock = stockQty > 0;
+                                  return Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 8,
+                                      vertical: 3,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: inStock
+                                          ? AppTheme.secondaryColor.withOpacity(0.1)
+                                          : AppTheme.dangerColor.withOpacity(0.08),
+                                      borderRadius: BorderRadius.circular(6),
+                                      border: Border.all(
+                                        color: inStock
+                                            ? AppTheme.secondaryColor.withOpacity(0.3)
+                                            : AppTheme.dangerColor.withOpacity(0.2),
+                                      ),
+                                    ),
+                                    child: Text(
+                                      inStock ? 'In Stock ($stockQty)' : 'Out of Stock',
+                                      style: TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.bold,
+                                        color: inStock
+                                            ? AppTheme.secondaryColor
+                                            : AppTheme.dangerColor,
+                                      ),
+                                    ),
+                                  );
+                                },
+                              ),
                             ],
                           ),
                         ],
@@ -9751,6 +13270,11 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                                                             );
                                                         if (val == null ||
                                                             val < 0) {
+                                                          return 'Invalid';
+                                                        }
+                                                        if (!RegExp(
+                                                          r'^\d+(\.\d{1,2})?$',
+                                                        ).hasMatch(clean)) {
                                                           return 'Invalid';
                                                         }
                                                         if (!RegExp(
@@ -12181,7 +15705,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     final formKey = GlobalKey<FormState>();
     final nameCtrl = TextEditingController();
     final descCtrl = TextEditingController();
-    String selectedType = 'Device';
+    String? selectedType;
     bool isSaving = false;
 
     final availableItemTypes = const [
@@ -12381,9 +15905,18 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                         if (!formKey.currentState!.validate()) return;
                         setD(() => isSaving = true);
                         try {
-                          await HomeVisitService().createKitItemMaster({
+                          if (selectedType == null || selectedType!.isEmpty) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Please select an item type'),
+                              backgroundColor: AppTheme.dangerColor,
+                            ),
+                          );
+                          return;
+                        }
+                        await HomeVisitService().createKitItemMaster({
                             'name': nameCtrl.text.trim(),
-                            'item_type': selectedType,
+                            'item_type': selectedType!,
                             'description': descCtrl.text.trim().isEmpty
                                 ? null
                                 : descCtrl.text.trim(),
@@ -15145,9 +18678,15 @@ class _EditStaffDialogState extends State<EditStaffDialog> {
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      backgroundColor: Colors.white,
-      surfaceTintColor: Colors.white,
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (bool didPop, dynamic result) async {
+        if (didPop) return;
+        DiscardDialogHelper.handleCancelOrDismiss(context, isDirty: _hasChanges());
+      },
+      child: AlertDialog(
+        backgroundColor: Colors.white,
+        surfaceTintColor: Colors.white,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(28),
       ),
@@ -15555,7 +19094,7 @@ class _EditStaffDialogState extends State<EditStaffDialog> {
       ),
       actions: [
         OutlinedButton(
-          onPressed: _isSaving ? null : () => Navigator.pop(context),
+          onPressed: _isSaving ? null : () => DiscardDialogHelper.handleCancelOrDismiss(context, isDirty: _hasChanges()),
           style: AppTheme.cancelButton,
           child: const Text('Cancel'),
         ),
@@ -15585,7 +19124,8 @@ class _EditStaffDialogState extends State<EditStaffDialog> {
               : const Text('Save'),
         ),
       ],
-    );
+    ),
+  );
   }
 }
 
@@ -15607,6 +19147,7 @@ class _AddUserDialogState extends State<AddUserDialog> {
 
   String? _selectedRole;
   List<String> _roles = [
+    'Admin',
     'Doctor',
     'Nurse',
     'Anaesthetist',
@@ -15635,9 +19176,24 @@ class _AddUserDialogState extends State<AddUserDialog> {
   final _emailFocusNode = FocusNode();
   final _mobileFocusNode = FocusNode();
 
+  bool _isDirty() {
+    return _nameController.text.trim().isNotEmpty ||
+        _emailController.text.trim().isNotEmpty ||
+        _mobileController.text.trim().isNotEmpty ||
+        _licenseController.text.trim().isNotEmpty ||
+        _selectedRole != null;
+  }
+
   @override
   void initState() {
     super.initState();
+    final currentUserRole = Provider.of<AuthProvider>(
+      context,
+      listen: false,
+    ).user?.role;
+    if (currentUserRole != 'Super Admin') {
+      _roles.remove('Admin');
+    }
     _passwordController.text = PasswordPolicy.generateSecurePassword();
     _loadSpecializations();
     _loadRoles();
@@ -15945,10 +19501,39 @@ class _AddUserDialogState extends State<AddUserDialog> {
     try {
       final rbacData = await _adminController.fetchRbacData();
       final rolesList = rbacData['roles'] as List<dynamic>? ?? [];
+      final currentUserRole = Provider.of<AuthProvider>(
+        context,
+        listen: false,
+      ).user?.role;
+
+      final orderedRoles = [
+        'Admin',
+        'Doctor',
+        'Nurse',
+        'Anaesthetist',
+        'Front Desk',
+        'Lab',
+        'Pharmacy',
+      ];
+
       final names = rolesList
-          .map((r) => r['name']?.toString() ?? '')
-          .where((name) => name.isNotEmpty && name != 'Super Admin')
+          .map((r) => (r['role_name'] ?? r['name'])?.toString().trim() ?? '')
+          .where((name) {
+            if (name.isEmpty || name == 'Super Admin') return false;
+            if (currentUserRole == 'Super Admin') return true;
+            return name != 'Admin';
+          })
           .toList();
+
+      names.sort((a, b) {
+        int indexA = orderedRoles.indexOf(a);
+        int indexB = orderedRoles.indexOf(b);
+        if (indexA == -1 && indexB == -1) return a.compareTo(b);
+        if (indexA == -1) return 1;
+        if (indexB == -1) return -1;
+        return indexA.compareTo(indexB);
+      });
+
       if (mounted) {
         setState(() {
           if (names.isNotEmpty) _roles = names;
@@ -15957,7 +19542,16 @@ class _AddUserDialogState extends State<AddUserDialog> {
       }
     } catch (e) {
       if (mounted) {
-        setState(() => _isLoadingRoles = false);
+        final currentUserRole = Provider.of<AuthProvider>(
+          context,
+          listen: false,
+        ).user?.role;
+        setState(() {
+          if (currentUserRole != 'Super Admin') {
+            _roles.remove('Admin');
+          }
+          _isLoadingRoles = false;
+        });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Error loading roles: $e'),
@@ -16601,45 +20195,51 @@ class _AddUserDialogState extends State<AddUserDialog> {
     final screenWidth = mediaQuery.size.width;
     final isMobile = screenWidth < 640;
 
-    return Dialog(
-      backgroundColor: Colors.white,
-      surfaceTintColor: Colors.white,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-      insetPadding: EdgeInsets.symmetric(
-        horizontal: isMobile ? 16 : 40,
-        vertical: isMobile ? 16 : 24,
-      ),
-      child: ConstrainedBox(
-        constraints: BoxConstraints(
-          maxWidth: 600,
-          maxHeight: mediaQuery.size.height * (isMobile ? 0.9 : 0.85),
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (bool didPop, dynamic result) async {
+        if (didPop) return;
+        DiscardDialogHelper.handleCancelOrDismiss(context, isDirty: _isDirty());
+      },
+      child: Dialog(
+        backgroundColor: Colors.white,
+        surfaceTintColor: Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        insetPadding: EdgeInsets.symmetric(
+          horizontal: isMobile ? 16 : 40,
+          vertical: isMobile ? 16 : 24,
         ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // Header
-            Padding(
-              padding: const EdgeInsets.fromLTRB(24, 20, 20, 16),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Text(
-                    'Register New Staff',
-                    style: TextStyle(
-                      fontFamily: AppTheme.fontFamily,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 18,
-                      color: AppTheme.textPrimaryColor,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxWidth: 600,
+            maxHeight: mediaQuery.size.height * (isMobile ? 0.9 : 0.85),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // Header
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 20, 20, 16),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text(
+                      'Register New Staff',
+                      style: TextStyle(
+                        fontFamily: AppTheme.fontFamily,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 18,
+                        color: AppTheme.textPrimaryColor,
+                      ),
                     ),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.close, size: 20),
-                    onPressed: () => Navigator.pop(context),
-                  ),
-                ],
+                    IconButton(
+                      icon: const Icon(Icons.close, size: 20),
+                      onPressed: () => DiscardDialogHelper.handleCancelOrDismiss(context, isDirty: _isDirty()),
+                    ),
+                  ],
+                ),
               ),
-            ),
             const Divider(height: 1),
             // Scrollable form content
             Flexible(
@@ -16784,7 +20384,7 @@ class _AddUserDialogState extends State<AddUserDialog> {
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
                   OutlinedButton(
-                    onPressed: _isLoading ? null : () => Navigator.pop(context),
+                    onPressed: _isLoading ? null : () => DiscardDialogHelper.handleCancelOrDismiss(context, isDirty: _isDirty()),
                     style: AppTheme.cancelButton,
                     child: const Text('Cancel'),
                   ),
@@ -16816,7 +20416,8 @@ class _AddUserDialogState extends State<AddUserDialog> {
           ],
         ),
       ),
-    );
+    ),
+  );
   }
 }
 

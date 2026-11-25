@@ -1,6 +1,5 @@
 import 'dart:async' show TimeoutException;
 import 'dart:convert';
-import 'dart:io' show SocketException;
 import 'package:http/http.dart' as http;
 import '../exceptions/network_exception.dart';
 import 'token_service.dart';
@@ -40,7 +39,14 @@ class ApiService {
     // to support granular error messages from the backend (e.g. inactive, suspended).
     // 5xx errors are caught here and surfaced as ServerErrorException.
     if (response.statusCode >= 500) {
-      throw ServerErrorException(response.statusCode);
+      String? serverMsg;
+      try {
+        final body = jsonDecode(response.body);
+        if (body is Map) {
+          serverMsg = (body['message'] ?? body['error'] ?? body['detail'])?.toString();
+        }
+      } catch (_) {}
+      throw ServerErrorException(response.statusCode, serverMsg);
     }
   }
 
@@ -56,7 +62,7 @@ class ApiService {
     final msg = e.toString().toLowerCase();
 
     // True no-internet signals
-    if (e is SocketException ||
+    if (msg.contains('socketexception') ||
         msg.contains('failed to fetch') ||      // Flutter Web / CORS / offline
         msg.contains('network is unreachable') ||
         msg.contains('failed host lookup') ||   // DNS failure

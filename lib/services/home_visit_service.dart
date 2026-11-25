@@ -295,6 +295,7 @@ class HomeVisitService {
     String attenderRelation,
     String signatureUrl, {
     String? feedback,
+    double? consultationFee,
   }) async {
     try {
       final response = await ApiService.post(
@@ -305,6 +306,8 @@ class HomeVisitService {
           'attender_signature_url': signatureUrl,
           if (feedback != null && feedback.trim().isNotEmpty)
             'feedback': feedback.trim(),
+          if (consultationFee != null)
+            'consultation_fee': consultationFee,
         },
       );
       final body = ApiService.decodeJsonResponse(response);
@@ -313,6 +316,74 @@ class HomeVisitService {
       }
       throw Exception(
         body['message'] ?? 'Failed to verify visit & generate billing details',
+      );
+    } catch (e) {
+      throw Exception(e.toString().replaceAll("Exception: ", ""));
+    }
+  }
+
+  // Update consultation fee on generated home visit invoice
+  Future<Map<String, dynamic>> updateInvoiceConsultationFee(
+    int visitId,
+    double newFee,
+  ) async {
+    try {
+      final response = await ApiService.put(
+        '$baseUrl/home-visits/$visitId/invoice-fee',
+        {
+          'fee': newFee,
+        },
+      );
+      final body = ApiService.decodeJsonResponse(response);
+      if (body['success'] == true && body['data'] != null) {
+        return body['data'];
+      }
+      throw Exception(
+        body['message'] ?? 'Failed to update consultation fee',
+      );
+    } catch (e) {
+      throw Exception(e.toString().replaceAll("Exception: ", ""));
+    }
+  }
+
+  // Generate or synchronize invoice for a home visit
+  Future<Map<String, dynamic>> generateInvoice(
+    int visitId, {
+    double? customFee,
+    bool forceRegenerate = false,
+  }) async {
+    try {
+      final response = await ApiService.post(
+        '$baseUrl/home-visits/$visitId/generate-invoice',
+        {
+          if (customFee != null) 'custom_fee': customFee,
+          'force_regenerate': forceRegenerate,
+        },
+      );
+      final body = ApiService.decodeJsonResponse(response);
+      if (body['success'] == true && body['data'] != null) {
+        return body['data'];
+      }
+      throw Exception(
+        body['message'] ?? 'Failed to generate invoice for home visit',
+      );
+    } catch (e) {
+      throw Exception(e.toString().replaceAll("Exception: ", ""));
+    }
+  }
+
+  // Get invoice details for a home visit
+  Future<Map<String, dynamic>> getInvoiceForVisit(int visitId) async {
+    try {
+      final response = await ApiService.get(
+        '$baseUrl/home-visits/$visitId/invoice',
+      );
+      final body = ApiService.decodeJsonResponse(response);
+      if (body['success'] == true && body['data'] != null) {
+        return body['data'];
+      }
+      throw Exception(
+        body['message'] ?? 'Failed to fetch invoice for home visit',
       );
     } catch (e) {
       throw Exception(e.toString().replaceAll("Exception: ", ""));

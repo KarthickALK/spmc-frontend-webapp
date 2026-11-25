@@ -37,19 +37,19 @@ class NurseNavConfig {
   static const bool showHomeVisitCare = true;
 
   /// Appointments (Visible)
-  static const bool showAppointments = false;
+  static const bool showAppointments = true;
 
   /// Doctors Directory (Visible)
-  static const bool showDoctors = false;
+  static const bool showDoctors = true;
 
   /// OPD Assistance (Visible)
-  static const bool showOpdAssistance = false;
+  static const bool showOpdAssistance = true;
 
   /// IPD Management (Visible)
-  static const bool showIpdManagement = false;
+  static const bool showIpdManagement = true;
 
   /// OT Management (Visible)
-  static const bool showOtManagement = false;
+  static const bool showOtManagement = true;
 
   /// Profile Screen (Visible)
   static const bool showProfile = true;
@@ -69,42 +69,49 @@ class NurseNavConfig {
         index: 1,
         icon: Icons.people_outline,
         label: 'Patients',
+        permissionRequired: 'view_patients',
         isVisible: showPatients,
       ),
       const NurseNavItem(
         index: 2,
         icon: Icons.calendar_today_outlined,
         label: 'Appointments',
+        permissionRequired: 'book_appointment',
         isVisible: showAppointments,
       ),
       const NurseNavItem(
         index: 3,
         icon: Icons.medical_services_outlined,
         label: 'Doctors',
+        permissionRequired: 'view_patients',
         isVisible: showDoctors,
       ),
       const NurseNavItem(
         index: 5,
         icon: Icons.local_hospital_outlined,
         label: 'OPD Assistance',
+        permissionRequired: 'opd_assistance',
         isVisible: showOpdAssistance,
       ),
       const NurseNavItem(
         index: 6,
         icon: Icons.bedroom_child_outlined,
         label: 'IPD Management',
+        permissionRequired: 'ipd_nursing_care',
         isVisible: showIpdManagement,
       ),
       const NurseNavItem(
         index: 7,
         icon: Icons.healing_outlined,
         label: 'OT Management',
+        permissionRequired: 'ot_nursing_consumables',
         isVisible: showOtManagement,
       ),
       const NurseNavItem(
         index: 9,
         icon: Icons.home_work_outlined,
         label: 'Home Visit Care',
+        permissionRequired: 'home_visit_care',
         isVisible: showHomeVisitCare,
       ),
       const NurseNavItem(
@@ -117,7 +124,16 @@ class NurseNavConfig {
 
     return allItems.where((item) {
       if (!item.isVisible) return false;
+      if (user?.role == 'Super Admin') return true;
       if (item.permissionRequired != null) {
+        if (item.permissionRequired == 'ot_nursing_consumables') {
+          return (user?.hasPermission('ot_nursing_consumables') ?? false) ||
+                 (user?.hasPermission('ot_who_checklist') ?? false);
+        }
+        if (item.permissionRequired == 'ipd_nursing_care') {
+          return (user?.hasPermission('ipd_nursing_care') ?? false) ||
+                 (user?.hasPermission('ipd_admission_counter') ?? false);
+        }
         return user?.hasPermission(item.permissionRequired!) ?? false;
       }
       return true;

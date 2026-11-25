@@ -19,6 +19,10 @@ class UserModel {
   final DoctorModel? doctorProfile;
   final NurseModel? nurseProfile;
 
+  final int? _departmentId;
+  final String? _departmentName;
+  final String? _departmentCode;
+
   final List<String> permissions;
   final Map<String, String> permissionDisplayMap;
 
@@ -26,6 +30,11 @@ class UserModel {
   String get fullname {
     return rawFullname ?? '';
   }
+
+  // Department Getters
+  int? get departmentId => _departmentId ?? doctorProfile?.departmentId ?? doctorProfile?.specializationId;
+  String? get departmentName => _departmentName ?? doctorProfile?.departmentName ?? doctorProfile?.specialization;
+  String? get departmentCode => _departmentCode ?? doctorProfile?.departmentCode;
 
   // Backward compatibility getters for UI screens
   String? get medicalLicense => doctorProfile?.medicalLicense;
@@ -45,6 +54,10 @@ class UserModel {
   String? get clinicLocation => doctorProfile?.clinicLocation;
   String? get consultationFee => doctorProfile?.consultationFee;
   String? get areasOfExpertise => doctorProfile?.areasOfExpertise;
+  String? get morningStartTime => doctorProfile?.morningStartTime;
+  String? get morningEndTime => doctorProfile?.morningEndTime;
+  String? get eveningStartTime => doctorProfile?.eveningStartTime;
+  String? get eveningEndTime => doctorProfile?.eveningEndTime;
 
   // Nurse Specific Getters
   String? get nursingRegistrationNumber => nurseProfile?.nursingRegistrationNumber;
@@ -70,9 +83,14 @@ class UserModel {
     this.preferredLanguage,
     this.doctorProfile,
     this.nurseProfile,
+    int? departmentId,
+    String? departmentName,
+    String? departmentCode,
     this.permissions = const [],
     this.permissionDisplayMap = const {},
-  });
+  }) : _departmentId = departmentId,
+       _departmentName = departmentName,
+       _departmentCode = departmentCode;
 
   factory UserModel.fromJson(Map<String, dynamic> json) {
     List<String> perms = [];
@@ -96,7 +114,11 @@ class UserModel {
     }
 
     return UserModel(
-      id: json['id'] is int ? json['id'] : int.tryParse(json['id'].toString()) ?? 0,
+      id: json['user_id'] is int
+          ? json['user_id']
+          : (json['id'] is int
+              ? json['id']
+              : int.tryParse((json['user_id'] ?? json['id']).toString()) ?? 0),
       rawFullname: json['fullname'] ?? json['fullName'] ?? '',
       email: json['email'] ?? '',
       role: json['role'] ?? '',
@@ -115,6 +137,11 @@ class UserModel {
       nurseProfile: (json['role'] == 'Nurse' || json['nursing_registration_number'] != null)
           ? NurseModel.fromJson(json)
           : null,
+      departmentId: json['department_id'] != null
+          ? int.tryParse(json['department_id'].toString())
+          : (json['specialization_id'] != null ? int.tryParse(json['specialization_id'].toString()) : null),
+      departmentName: json['department_name'] ?? json['specialization'] ?? json['department'],
+      departmentCode: json['department_code']?.toString(),
       permissions: perms,
       permissionDisplayMap: displays,
     );

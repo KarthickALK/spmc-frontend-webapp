@@ -29,6 +29,10 @@ class CustomDropdownSearch extends StatefulWidget {
   final bool readOnly;
   final int? maxLength;
   final List<TextInputFormatter>? inputFormatters;
+  final String? emptyMessage;
+  final Set<String>? disabledKeys;
+  final String? disabledItemMessage;
+  final AutovalidateMode? autovalidateMode;
 
   const CustomDropdownSearch({
     super.key,
@@ -54,6 +58,10 @@ class CustomDropdownSearch extends StatefulWidget {
     this.readOnly = false,
     this.maxLength = 60,
     this.inputFormatters,
+    this.emptyMessage,
+    this.disabledKeys,
+    this.disabledItemMessage,
+    this.autovalidateMode,
   });
 
   static bool get isOpen =>
@@ -80,6 +88,8 @@ class _CustomDropdownSearchState extends State<CustomDropdownSearch>
 
   List<MapEntry<String, String>> _filteredItems = [];
   int _highlightedIndex = 0;
+  bool _isSelecting = false;
+  String? _lastCommittedValue;
 
   Map<String, String> get _allEntries {
     if (widget.dropdownMap != null) {
@@ -133,6 +143,7 @@ class _CustomDropdownSearchState extends State<CustomDropdownSearch>
     WidgetsBinding.instance.addObserver(this);
 
     _filteredItems = _allEntries.entries.toList();
+    _lastCommittedValue = widget.value;
 
     final displayValue = _getDisplayValue(widget.value);
     _textEditingController = TextEditingController(text: displayValue);
@@ -144,6 +155,7 @@ class _CustomDropdownSearchState extends State<CustomDropdownSearch>
   }
 
   void _onFocusChange() {
+    if (_isSelecting) return;
     if (!_searchFocusNode.hasFocus && !_mainFocusNode.hasFocus) {
       if (_fieldKey.currentState != null) {
         _validateAndSyncInput(_fieldKey.currentState!);
@@ -155,13 +167,15 @@ class _CustomDropdownSearchState extends State<CustomDropdownSearch>
   }
 
   void _validateAndSyncInput(FormFieldState<String> field) {
+    if (_isSelecting) return;
     if (widget.allowFreeText) return;
 
     final text = _textEditingController.text.trim();
 
     if (text.isEmpty) {
-      if (widget.value != null && widget.value!.isNotEmpty) {
-        field.didChange(null);
+      field.didChange(null);
+      if (_lastCommittedValue != null && _lastCommittedValue!.isNotEmpty) {
+        _lastCommittedValue = null;
         widget.onChanged?.call(null);
       }
       return;
@@ -177,19 +191,26 @@ class _CustomDropdownSearchState extends State<CustomDropdownSearch>
     }
 
     if (matchedEntry != null) {
-      if (widget.value != matchedEntry.key) {
+      if (_lastCommittedValue != matchedEntry.key) {
+        _lastCommittedValue = matchedEntry.key;
         field.didChange(matchedEntry.key);
-        _textEditingController.text = matchedEntry.value;
+        if (widget.clearOnSelect) {
+          _textEditingController.clear();
+          _lastCommittedValue = null;
+        } else {
+          _textEditingController.text = matchedEntry.value;
+        }
         widget.onChanged?.call(matchedEntry.key);
       } else {
-        if (_textEditingController.text != matchedEntry.value) {
+        if (!widget.clearOnSelect && _textEditingController.text != matchedEntry.value) {
           _textEditingController.text = matchedEntry.value;
         }
       }
     } else {
       _textEditingController.clear();
       field.didChange(null);
-      if (widget.value != null && widget.value!.isNotEmpty) {
+      if (_lastCommittedValue != null && _lastCommittedValue!.isNotEmpty) {
+        _lastCommittedValue = null;
         widget.onChanged?.call(null);
       }
       _filteredItems = _allEntries.entries.toList();
@@ -241,10 +262,14 @@ class _CustomDropdownSearchState extends State<CustomDropdownSearch>
         if (_filteredItems.isNotEmpty &&
             _highlightedIndex >= 0 &&
             _highlightedIndex < _filteredItems.length) {
+          final item = _filteredItems[_highlightedIndex];
+          if (widget.disabledKeys?.contains(item.key) == true) {
+            return KeyEventResult.handled;
+          }
           if (_fieldKey.currentState != null) {
             _selectItem(
               _fieldKey.currentState!,
-              _filteredItems[_highlightedIndex],
+              item,
             );
           }
           return KeyEventResult.handled;
@@ -286,19 +311,29 @@ class _CustomDropdownSearchState extends State<CustomDropdownSearch>
 
   void _selectItem(
       FormFieldState<String> field, MapEntry<String, String> entry) {
-    if (widget.clearOnSelect) {
-      field.didChange(null);
-      _textEditingController.clear();
-      _filterItems('');
-    } else {
-      field.didChange(entry.key);
-      _textEditingController.text = entry.value;
-      _filteredItems = _allEntries.entries.toList();
+    if (_isSelecting) return;
+    _isSelecting = true;
+    try {
+      _hideDropdown();
+      if (widget.clearOnSelect) {
+        _lastCommittedValue = null;
+        field.didChange(null);
+        _textEditingController.clear();
+        _filterItems('');
+      } else {
+        _lastCommittedValue = entry.key;
+        field.didChange(entry.key);
+        _textEditingController.text = entry.value;
+        _filteredItems = _allEntries.entries.toList();
+      }
+      widget.onChanged?.call(entry.key);
+      _searchFocusNode.unfocus();
+      _mainFocusNode.unfocus();
+    } finally {
+      SchedulerBinding.instance.addPostFrameCallback((_) {
+        _isSelecting = false;
+      });
     }
-    widget.onChanged?.call(entry.key);
-    _searchFocusNode.unfocus();
-    _mainFocusNode.unfocus();
-    _hideDropdown();
   }
 
   @override
@@ -307,6 +342,7 @@ class _CustomDropdownSearchState extends State<CustomDropdownSearch>
     
     // Only call didChange when the actual selected value changes!
     if (widget.value != oldWidget.value) {
+      _lastCommittedValue = widget.value;
       SchedulerBinding.instance.addPostFrameCallback((_) {
         if (mounted && _fieldKey.currentState != null) {
           _fieldKey.currentState!.didChange(widget.value);
@@ -533,16 +569,30 @@ class _CustomDropdownSearchState extends State<CustomDropdownSearch>
                                   : Container(
                                       padding: const EdgeInsets.all(16),
                                       alignment: Alignment.center,
-                                      child: Text(
-                                        context.tr(
-                                          'no_matching_items_found',
-                                          fallback: 'No matching items found',
-                                        ),
-                                        style: TextStyle(
-                                          fontFamily: 'Inter',
-                                          color: AppTheme.isDark(context) ? AppTheme.darkTextSecondaryColor : Colors.grey.shade500,
-                                          fontSize: 13,
-                                        ),
+                                      child: Builder(
+                                        builder: (context) {
+                                          String effectiveEmpty = widget.emptyMessage ?? '';
+                                          if (effectiveEmpty.isEmpty) {
+                                            final contextText = '${widget.label} ${widget.hint ?? ''}'.toLowerCase();
+                                            if (_allEntries.isEmpty && (contextText.contains('bed') || contextText.contains('ward'))) {
+                                              effectiveEmpty = 'No beds available in the selected ward.';
+                                            } else {
+                                              effectiveEmpty = context.tr(
+                                                'no_matching_items_found',
+                                                fallback: 'No matching items found',
+                                              );
+                                            }
+                                          }
+                                          return Text(
+                                            effectiveEmpty,
+                                            style: TextStyle(
+                                              fontFamily: 'Inter',
+                                              color: AppTheme.isDark(context) ? AppTheme.darkTextSecondaryColor : Colors.grey.shade500,
+                                              fontSize: 13,
+                                            ),
+                                            textAlign: TextAlign.center,
+                                          );
+                                        },
                                       ),
                                     ))
                               : Listener(
@@ -569,6 +619,8 @@ class _CustomDropdownSearchState extends State<CustomDropdownSearch>
                                             index == _highlightedIndex;
                                         final isSelected =
                                             entry.key == widget.value;
+                                        final bool isDisabled =
+                                            widget.disabledKeys?.contains(entry.key) ?? false;
 
                                         return Material(
                                           color: Colors.transparent,
@@ -576,6 +628,19 @@ class _CustomDropdownSearchState extends State<CustomDropdownSearch>
                                             splashFactory:
                                                 NoSplash.splashFactory,
                                             onTap: () {
+                                              if (isDisabled) {
+                                                final msg = widget.disabledItemMessage ??
+                                                    '${entry.key} is occupied and unavailable for conflicting schedules.';
+                                                ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                                                ScaffoldMessenger.of(context).showSnackBar(
+                                                  SnackBar(
+                                                    content: Text(msg),
+                                                    backgroundColor: Colors.red.shade700,
+                                                    duration: const Duration(seconds: 3),
+                                                  ),
+                                                );
+                                                return;
+                                              }
                                               if (_fieldKey.currentState !=
                                                   null) {
                                                 _selectItem(
@@ -594,31 +659,57 @@ class _CustomDropdownSearchState extends State<CustomDropdownSearch>
                                               decoration: BoxDecoration(
                                                 borderRadius:
                                                     BorderRadius.circular(6),
-                                                color: isSelected
-                                                    ? AppTheme.primaryColor.withOpacity(0.12)
-                                                    : (isHighlighted
-                                                        ? (AppTheme.isDark(context) ? Colors.white.withOpacity(0.06) : Colors.grey.shade100)
-                                                        : Colors.transparent),
+                                                color: isDisabled
+                                                    ? Colors.red.shade50.withOpacity(0.4)
+                                                    : (isSelected
+                                                        ? AppTheme.primaryColor.withOpacity(0.12)
+                                                        : (isHighlighted
+                                                            ? (AppTheme.isDark(context) ? Colors.white.withOpacity(0.06) : Colors.grey.shade100)
+                                                            : Colors.transparent)),
                                               ),
                                               child: Row(
                                                 children: [
+                                                  if (isDisabled)
+                                                    Padding(
+                                                      padding: const EdgeInsets.only(right: 6),
+                                                      child: Icon(Icons.block, size: 14, color: Colors.red.shade600),
+                                                    ),
                                                   Expanded(
                                                     child: Text(
                                                       entry.value,
                                                       style:
                                                           TextStyle(
                                                         fontFamily: 'Inter',
-                                                        color: isSelected
-                                                            ? AppTheme.primaryColor
-                                                            : (AppTheme.isDark(context) ? AppTheme.darkTextPrimaryColor : Colors.black87),
+                                                        color: isDisabled
+                                                            ? Colors.red.shade700
+                                                            : (isSelected
+                                                                ? AppTheme.primaryColor
+                                                                : (AppTheme.isDark(context) ? AppTheme.darkTextPrimaryColor : Colors.black87)),
                                                         fontSize: 14,
-                                                        fontWeight: isSelected
+                                                        fontWeight: isSelected || isDisabled
                                                             ? FontWeight.w600
                                                             : FontWeight.w400,
                                                       ),
                                                     ),
                                                   ),
-                                                  if (isSelected)
+                                                  if (isDisabled)
+                                                    Container(
+                                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                      decoration: BoxDecoration(
+                                                        color: Colors.red.shade100,
+                                                        borderRadius: BorderRadius.circular(4),
+                                                        border: Border.all(color: Colors.red.shade300),
+                                                      ),
+                                                      child: const Text(
+                                                        'Occupied',
+                                                        style: TextStyle(
+                                                          color: Colors.red,
+                                                          fontSize: 10,
+                                                          fontWeight: FontWeight.bold,
+                                                        ),
+                                                      ),
+                                                    )
+                                                  else if (isSelected)
                                                     const Icon(
                                                       Icons.check,
                                                       size: 16,
@@ -700,7 +791,11 @@ class _CustomDropdownSearchState extends State<CustomDropdownSearch>
   Widget build(BuildContext context) {
     if (!_searchFocusNode.hasFocus) {
       final expectedDisplay = _getDisplayValue(widget.value);
-      if (expectedDisplay.isNotEmpty &&
+      if (expectedDisplay.isEmpty &&
+          (widget.value == null || widget.value!.isEmpty) &&
+          _textEditingController.text.isNotEmpty) {
+        _textEditingController.text = '';
+      } else if (expectedDisplay.isNotEmpty &&
           _textEditingController.text != expectedDisplay &&
           (widget.value == null ||
               widget.value!.isEmpty ||
@@ -754,7 +849,7 @@ class _CustomDropdownSearchState extends State<CustomDropdownSearch>
             child: FormField<String>(
               key: _fieldKey,
               initialValue: widget.value,
-              autovalidateMode: AutovalidateMode.onUserInteraction,
+              autovalidateMode: widget.autovalidateMode ?? AutovalidateMode.onUserInteraction,
               validator: (val) {
                 if (!widget.allowFreeText) {
                   final rawText = _textEditingController.text.trim();
@@ -787,6 +882,7 @@ class _CustomDropdownSearchState extends State<CustomDropdownSearch>
                     TapRegion(
                       groupId: _groupId,
                       onTapOutside: (_) {
+                        if (_isSelecting) return;
                         _hideDropdown();
                         if (_fieldKey.currentState != null) {
                           _validateAndSyncInput(_fieldKey.currentState!);
@@ -912,11 +1008,15 @@ class _CustomDropdownSearchState extends State<CustomDropdownSearch>
                                       }
                                     }
                                     if (matched != null) {
+                                      _lastCommittedValue = matched.key;
                                       field.didChange(matched.key);
                                       widget.onChanged?.call(matched.key);
                                     } else {
                                       field.didChange(null);
-                                      widget.onChanged?.call(null);
+                                      if (_lastCommittedValue != null) {
+                                        _lastCommittedValue = null;
+                                        widget.onChanged?.call(null);
+                                      }
                                     }
                                   }
                                   _filterItems(val);

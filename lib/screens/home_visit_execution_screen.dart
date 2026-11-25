@@ -1086,6 +1086,7 @@ class _HomeVisitExecutionScreenState extends State<HomeVisitExecutionScreen>
   final TextEditingController _attenderNameCtrl = TextEditingController();
   final TextEditingController _attenderRelationCtrl = TextEditingController();
   final TextEditingController _feedbackCtrl = TextEditingController();
+  final TextEditingController _consultationFeeCtrl = TextEditingController(text: '500');
   final List<Offset?> _signaturePoints = [];
   bool _isSigningSignature = false;
 
@@ -2368,11 +2369,8 @@ class _HomeVisitExecutionScreenState extends State<HomeVisitExecutionScreen>
                       _buildLabel(context.tr('medicine_name_req')),
                       CustomDropdownSearch(
                         label: '',
-                        hint: context.tr('select_medicine_hint'),
                         dropdownMap: {
-                          for (final m in (_dbMedicines.isNotEmpty
-                              ? _dbMedicines
-                              : _defaultMedicines))
+                          for (final m in _dbMedicines)
                             m: context.translateMedicine(m),
                         },
                         value: nameCtrl.text.isNotEmpty ? nameCtrl.text : null,
@@ -3205,17 +3203,28 @@ class _HomeVisitExecutionScreenState extends State<HomeVisitExecutionScreen>
     );
   }
 
-  Widget _buildTableHeader(String title) {
+  Widget _buildTableHeader(String title, {IconData? icon}) {
+    final textWidget = Text(
+      title,
+      style: AppTheme.tableHeadingTextStyle(context, fontSize: 11),
+      overflow: TextOverflow.ellipsis,
+    );
+    if (icon != null) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: AppTheme.tableHeadingIconSize, color: AppTheme.getTableHeadingIconColor(context)),
+            const SizedBox(width: 4),
+            Flexible(child: textWidget),
+          ],
+        ),
+      );
+    }
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
-      child: Text(
-        title,
-        style: const TextStyle(
-          fontSize: 10,
-          fontWeight: FontWeight.bold,
-          color: AppTheme.primaryColor,
-        ),
-      ),
+      child: textWidget,
     );
   }
 
@@ -4032,15 +4041,15 @@ class _HomeVisitExecutionScreenState extends State<HomeVisitExecutionScreen>
                               },
                               children: [
                                 TableRow(
-                                  decoration: const BoxDecoration(
-                                    color: Color(0xFFF8FAFC),
+                                  decoration: BoxDecoration(
+                                    color: AppTheme.getTableHeadingRowColor(context),
                                   ),
                                   children: [
-                                    _buildTableHeader(context.tr('consumable_item', fallback: 'Consumable Item')),
-                                    _buildTableHeader(context.tr('qty_per_proc', fallback: 'Qty / Proc')),
-                                    _buildTableHeader(context.tr('unit_price', fallback: 'Unit Price')),
-                                    _buildTableHeader(context.tr('required_qty', fallback: 'Required Qty')),
-                                    _buildTableHeader('${context.tr('total', fallback: 'Total')} (₹)'),
+                                    _buildTableHeader(context.tr('consumable_item', fallback: 'Consumable Item'), icon: Icons.inventory_2_outlined),
+                                    _buildTableHeader(context.tr('qty_per_proc', fallback: 'Qty / Proc'), icon: Icons.format_list_numbered),
+                                    _buildTableHeader(context.tr('unit_price', fallback: 'Unit Price'), icon: Icons.currency_rupee),
+                                    _buildTableHeader(context.tr('required_qty', fallback: 'Required Qty'), icon: Icons.shopping_basket_outlined),
+                                    _buildTableHeader('${context.tr('total', fallback: 'Total')} (₹)', icon: Icons.payments_outlined),
                                     _buildTableHeader(''),
                                   ],
                                 ),
@@ -4990,6 +4999,7 @@ class _HomeVisitExecutionScreenState extends State<HomeVisitExecutionScreen>
     _attenderNameCtrl.clear();
     _attenderRelationCtrl.clear();
     _feedbackCtrl.clear();
+    _consultationFeeCtrl.text = '500';
     setState(() => _signaturePoints.clear());
   }
 
@@ -5066,7 +5076,7 @@ class _HomeVisitExecutionScreenState extends State<HomeVisitExecutionScreen>
     final baseUrl = ApiEndpoints.baseUrl;
     try {
       final medRes = await ApiService.get(
-        '$baseUrl/inventory/medicine-catalog',
+        '$baseUrl/inventory/medicine-catalog?in_stock_only=true',
       );
       final medBody = ApiService.decodeJsonResponse(medRes);
       if (medBody['success'] == true && medBody['data'] != null) {
@@ -5157,6 +5167,9 @@ class _HomeVisitExecutionScreenState extends State<HomeVisitExecutionScreen>
     final authUser = Provider.of<AuthProvider>(context, listen: false).user;
     await ctrl.fetchVisitDetails(widget.visitId);
     await ctrl.fetchVisits();
+    if (ctrl.selectedVisit != null && ctrl.selectedVisit!.consultationFee != null) {
+      _consultationFeeCtrl.text = ctrl.selectedVisit!.consultationFee!.toStringAsFixed(0);
+    }
     _fetchInventoryCatalogs();
     if (!mounted || widget.isReadOnlyView || _isLeaving) return;
     if (ctrl.selectedVisit != null &&
@@ -5858,6 +5871,7 @@ class _HomeVisitExecutionScreenState extends State<HomeVisitExecutionScreen>
     _attenderNameCtrl.dispose();
     _attenderRelationCtrl.dispose();
     _feedbackCtrl.dispose();
+    _consultationFeeCtrl.dispose();
     super.dispose();
   }
 
@@ -8166,152 +8180,72 @@ class _HomeVisitExecutionScreenState extends State<HomeVisitExecutionScreen>
                           TableCellVerticalAlignment.middle,
                       children: [
                         TableRow(
-                          decoration: const BoxDecoration(
-                            color: Color(0xFFF8FAFC),
+                          decoration: BoxDecoration(
+                            color: AppTheme.getTableHeadingRowColor(context),
                             border: Border(
-                              bottom: BorderSide(color: Color(0xFFE2E8F0)),
+                              bottom: BorderSide(color: AppTheme.getBorderColor(context)),
                             ),
                           ),
                           children: [
-                            Padding(
-                              padding: EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 14,
-                              ),
-                              child: Text(
-                                context.tr('vitals_date_time', fallback: 'Date & Time Recorded'),
-                                style: TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 12,
-                                  color: Color(0xFF1E293B),
-                                ),
-                              ),
+                            AppTheme.tableRowHeaderCell(
+                              context: context,
+                              label: context.tr('vitals_date_time', fallback: 'Date & Time Recorded'),
+                              icon: Icons.access_time,
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
                             ),
-                            Padding(
-                              padding: EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 14,
-                              ),
-                              child: Text(
-                                context.tr('vitals_time_gap', fallback: 'Time Gap / Duration'),
-                                style: TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 12,
-                                  color: Color(0xFF1E293B),
-                                ),
-                              ),
+                            AppTheme.tableRowHeaderCell(
+                              context: context,
+                              label: context.tr('vitals_time_gap', fallback: 'Time Gap / Duration'),
+                              icon: Icons.timelapse_outlined,
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
                             ),
-                            Padding(
-                              padding: EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 14,
-                              ),
-                              child: Text(
-                                context.tr('vitals_bp', fallback: 'BP (mmHg)'),
-                                style: TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 12,
-                                  color: Color(0xFF1E293B),
-                                ),
-                              ),
+                            AppTheme.tableRowHeaderCell(
+                              context: context,
+                              label: context.tr('vitals_bp', fallback: 'BP (mmHg)'),
+                              icon: Icons.favorite_outline,
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
                             ),
-                            Padding(
-                              padding: EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 14,
-                              ),
-                              child: Text(
-                                context.tr('vitals_pulse', fallback: 'Pulse (bpm)'),
-                                style: TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 12,
-                                  color: Color(0xFF1E293B),
-                                ),
-                              ),
+                            AppTheme.tableRowHeaderCell(
+                              context: context,
+                              label: context.tr('vitals_pulse', fallback: 'Pulse (bpm)'),
+                              icon: Icons.monitor_heart_outlined,
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
                             ),
-                            Padding(
-                              padding: EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 14,
-                              ),
-                              child: Text(
-                                context.tr('vitals_temp', fallback: 'Temp (°F)'),
-                                style: TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 12,
-                                  color: Color(0xFF1E293B),
-                                ),
-                              ),
+                            AppTheme.tableRowHeaderCell(
+                              context: context,
+                              label: context.tr('vitals_temp', fallback: 'Temp (°F)'),
+                              icon: Icons.thermostat_outlined,
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
                             ),
-                            Padding(
-                              padding: EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 14,
-                              ),
-                              child: Text(
-                                context.tr('vitals_spo2', fallback: 'SpO₂ (%)'),
-                                style: TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 12,
-                                  color: Color(0xFF1E293B),
-                                ),
-                              ),
+                            AppTheme.tableRowHeaderCell(
+                              context: context,
+                              label: context.tr('vitals_spo2', fallback: 'SpO₂ (%)'),
+                              icon: Icons.water_drop_outlined,
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
                             ),
-                            Padding(
-                              padding: EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 14,
-                              ),
-                              child: Text(
-                                context.tr('vitals_sugar', fallback: 'Sugar (mg/dL)'),
-                                style: TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 12,
-                                  color: Color(0xFF1E293B),
-                                ),
-                              ),
+                            AppTheme.tableRowHeaderCell(
+                              context: context,
+                              label: context.tr('vitals_sugar', fallback: 'Sugar (mg/dL)'),
+                              icon: Icons.bloodtype_outlined,
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
                             ),
-                            Padding(
-                              padding: EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 14,
-                              ),
-                              child: Text(
-                                context.tr('vitals_weight', fallback: 'Weight (kg)'),
-                                style: TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 12,
-                                  color: Color(0xFF1E293B),
-                                ),
-                              ),
+                            AppTheme.tableRowHeaderCell(
+                              context: context,
+                              label: context.tr('vitals_weight', fallback: 'Weight (kg)'),
+                              icon: Icons.scale_outlined,
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
                             ),
-                            Padding(
-                              padding: EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 14,
-                              ),
-                              child: Text(
-                                context.tr('vitals_height', fallback: 'Height (cm)'),
-                                style: TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 12,
-                                  color: Color(0xFF1E293B),
-                                ),
-                              ),
+                            AppTheme.tableRowHeaderCell(
+                              context: context,
+                              label: context.tr('vitals_height', fallback: 'Height (cm)'),
+                              icon: Icons.height_outlined,
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
                             ),
-                            Padding(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 14,
-                              ),
-                              child: Text(
-                                context.tr('actions', fallback: 'Actions'),
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 12,
-                                  color: Color(0xFF1E293B),
-                                ),
-                              ),
+                            AppTheme.tableRowHeaderCell(
+                              context: context,
+                              label: context.tr('actions', fallback: 'Actions'),
+                              icon: Icons.settings_outlined,
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
                             ),
                           ],
                         ),
@@ -9321,56 +9255,19 @@ class _HomeVisitExecutionScreenState extends State<HomeVisitExecutionScreen>
         child: SingleChildScrollView(
           scrollDirection: Axis.horizontal,
           child: DataTable(
-            headingRowColor: WidgetStateProperty.all(const Color(0xFFF8FAFC)),
-            columns: const [
-              DataColumn(
-                label: Text(
-                  'Date & Time Recorded',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-              ),
-              DataColumn(
-                label: Text(
-                  'Time Gap / Duration',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-              ),
-              DataColumn(
-                label: Text(
-                  'BP (mmHg)',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-              ),
-              DataColumn(
-                label: Text(
-                  'Pulse (bpm)',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-              ),
-              DataColumn(
-                label: Text(
-                  'Temp (°F)',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-              ),
-              DataColumn(
-                label: Text(
-                  'SpO₂ (%)',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-              ),
-              DataColumn(
-                label: Text(
-                  'Sugar (mg/dL)',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-              ),
-              DataColumn(
-                label: Text(
-                  'Weight / Height',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-              ),
+            headingRowColor: WidgetStateProperty.resolveWith(
+              (states) => AppTheme.getTableHeadingRowColor(context),
+            ),
+            headingTextStyle: AppTheme.tableHeadingTextStyle(context),
+            columns: [
+              AppTheme.dataColumnHeader(context: context, label: 'Date & Time Recorded', icon: Icons.access_time),
+              AppTheme.dataColumnHeader(context: context, label: 'Time Gap / Duration', icon: Icons.timelapse_outlined),
+              AppTheme.dataColumnHeader(context: context, label: 'BP (mmHg)', icon: Icons.monitor_heart_outlined),
+              AppTheme.dataColumnHeader(context: context, label: 'Pulse (bpm)', icon: Icons.favorite_outline),
+              AppTheme.dataColumnHeader(context: context, label: 'Temp (°F)', icon: Icons.thermostat_outlined),
+              AppTheme.dataColumnHeader(context: context, label: 'SpO₂ (%)', icon: Icons.bloodtype_outlined),
+              AppTheme.dataColumnHeader(context: context, label: 'Sugar (mg/dL)', icon: Icons.water_drop_outlined),
+              AppTheme.dataColumnHeader(context: context, label: 'Weight / Height', icon: Icons.fitness_center_outlined),
             ],
             rows: history.map((v) {
               String timeStr = 'N/A';
@@ -9616,27 +9513,31 @@ class _HomeVisitExecutionScreenState extends State<HomeVisitExecutionScreen>
             ),
             const SizedBox(height: 16),
             Container(
-              padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: const Color(0xFFF8FAFC),
                 borderRadius: BorderRadius.circular(10),
                 border: Border.all(color: const Color(0xFFE2E8F0)),
               ),
-              child: CheckboxListTile(
-                activeColor: AppTheme.primaryColor,
-                title: Text(
-                  context.tr('nail_trimming_hygiene'),
-                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+              child: Material(
+                color: const Color(0xFFF8FAFC),
+                borderRadius: BorderRadius.circular(10),
+                clipBehavior: Clip.antiAlias,
+                child: CheckboxListTile(
+                  contentPadding: const EdgeInsets.all(12),
+                  activeColor: AppTheme.primaryColor,
+                  title: Text(
+                    context.tr('nail_trimming_hygiene'),
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                  ),
+                  subtitle: Text(
+                    context.tr('check_nail_trimming'),
+                  ),
+                  value: _nailTrimmingDone,
+                  onChanged: (val) {
+                    setState(() {
+                      _nailTrimmingDone = val ?? false;
+                    });
+                  },
                 ),
-                subtitle: Text(
-                  context.tr('check_nail_trimming'),
-                ),
-                value: _nailTrimmingDone,
-                onChanged: (val) {
-                  setState(() {
-                    _nailTrimmingDone = val ?? false;
-                  });
-                },
               ),
             ),
             const SizedBox(height: 16),
@@ -9844,42 +9745,26 @@ class _HomeVisitExecutionScreenState extends State<HomeVisitExecutionScreen>
                     defaultVerticalAlignment: TableCellVerticalAlignment.middle,
                     children: [
                       TableRow(
-                        decoration: const BoxDecoration(
-                          color: Color(0xFFEDF2F7),
+                        decoration: BoxDecoration(
+                          color: AppTheme.getTableHeadingRowColor(context),
                           border: Border(
-                            bottom: BorderSide(color: Color(0xFFE2E8F0)),
+                            bottom: BorderSide(color: AppTheme.getBorderColor(context)),
                           ),
                         ),
                         children: [
-                          Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 10,
-                            ),
-                            child: Center(
-                              child: Text(
-                                context.tr('vitals_date_time', fallback: 'Date & Time Recorded'),
-                                style: TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 12,
-                                  color: AppTheme.primaryColor,
-                                ),
-                              ),
-                            ),
+                          AppTheme.tableRowHeaderCell(
+                            context: context,
+                            label: context.tr('vitals_date_time', fallback: 'Date & Time Recorded'),
+                            icon: Icons.access_time,
+                            textAlign: TextAlign.center,
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                           ),
-                          Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 10,
-                            ),
-                            child: Text(
-                              context.tr('care_activities_logged', fallback: 'Care Activities & Observations Logged'),
-                              style: const TextStyle(
-                                fontWeight: FontWeight.bold,
-                                fontSize: 12,
-                                color: AppTheme.primaryColor,
-                              ),
-                            ),
+                          AppTheme.tableRowHeaderCell(
+                            context: context,
+                            label: context.tr('care_activities_logged', fallback: 'Care Activities & Observations Logged'),
+                            icon: Icons.assignment_outlined,
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                           ),
                         ],
                       ),
@@ -12769,6 +12654,34 @@ class _HomeVisitExecutionScreenState extends State<HomeVisitExecutionScreen>
                     ],
                   ),
                   const SizedBox(height: 18),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _buildLabel(context.tr('home_visit_consultation_fee', fallback: 'Home Visit Consultation Fee (₹)')),
+                      TextFormField(
+                        controller: _consultationFeeCtrl,
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        inputFormatters: [
+                          FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
+                        ],
+                        decoration: AppTheme.standardInputDecoration(
+                          hintText: '500',
+                          prefixIcon: Icons.currency_rupee,
+                        ),
+                        validator: (val) {
+                          if (val == null || val.trim().isEmpty) {
+                            return context.tr('fee_required', fallback: 'Please enter consultation fee');
+                          }
+                          final parsed = double.tryParse(val.trim());
+                          if (parsed == null || parsed < 0 || parsed > 50000) {
+                            return context.tr('enter_valid_fee', fallback: 'Please enter a valid amount (₹0 - ₹50,000)');
+                          }
+                          return null;
+                        },
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 18),
                   _buildFeedbackVoiceField(
                     controller: _feedbackCtrl,
                     isModal: false,
@@ -12907,6 +12820,15 @@ class _HomeVisitExecutionScreenState extends State<HomeVisitExecutionScreen>
                                 return;
                               }
 
+                              final feeVal = double.tryParse(_consultationFeeCtrl.text.trim()) ?? 500.0;
+                              if (feeVal < 0 || feeVal > 50000) {
+                                AppNotification.showError(
+                                  context,
+                                  context.tr('enter_valid_fee', fallback: 'Please enter a valid amount (₹0 - ₹50,000)'),
+                                );
+                                return;
+                              }
+
                               setState(() => _isVerifying = true);
                               final result = await controller.verifyVisit(
                                 visit.id,
@@ -12914,18 +12836,19 @@ class _HomeVisitExecutionScreenState extends State<HomeVisitExecutionScreen>
                                 _attenderRelationCtrl.text.trim(),
                                 'signature_base64_data_valid',
                                 feedback: _feedbackCtrl.text.trim(),
+                                consultationFee: feeVal,
                               );
                               setState(() => _isVerifying = false);
 
                               if (result != null && mounted) {
                                 _clearSignatureForm();
-                                final _ivLocale = Provider.of<LanguageProvider>(context, listen: false).locale;
+                                final ivLocale = Provider.of<LanguageProvider>(context, listen: false).locale;
                                 showDialog(
                                     context: context,
                                     barrierDismissible: false,
                                     builder: (dlgCtx) => Localizations.override(
                                       context: dlgCtx,
-                                      locale: _ivLocale,
+                                      locale: ivLocale,
                                       child: HomeVisitInvoiceDialog(
                                         invoiceData: result,
                                         visit: visit,
@@ -12963,6 +12886,11 @@ class _HomeVisitExecutionScreenState extends State<HomeVisitExecutionScreen>
   ) {
     final nameCtrl = TextEditingController(text: _attenderNameCtrl.text);
     final relCtrl = TextEditingController(text: _attenderRelationCtrl.text);
+    final feeCtrl = TextEditingController(
+      text: _consultationFeeCtrl.text.isNotEmpty
+          ? _consultationFeeCtrl.text
+          : (visit.consultationFee?.toStringAsFixed(0) ?? '500'),
+    );
     final feedbackCtrl = TextEditingController(text: _feedbackCtrl.text);
     List<Offset?> sigPoints = List.from(_signaturePoints);
     bool isSubmitting = false;
@@ -13059,6 +12987,19 @@ class _HomeVisitExecutionScreenState extends State<HomeVisitExecutionScreen>
                     ],
                     decoration: AppTheme.standardInputDecoration(
                       hintText: context.tr('attender_relation_hint', fallback: 'e.g. Son, Spouse, Daughter'),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  _buildLabel(context.tr('home_visit_consultation_fee', fallback: 'Home Visit Consultation Fee (₹)')),
+                  TextFormField(
+                    controller: feeCtrl,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    inputFormatters: [
+                      FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
+                    ],
+                    decoration: AppTheme.standardInputDecoration(
+                      hintText: '500',
+                      prefixIcon: Icons.currency_rupee,
                     ),
                   ),
                   const SizedBox(height: 16),
@@ -13239,18 +13180,19 @@ class _HomeVisitExecutionScreenState extends State<HomeVisitExecutionScreen>
                                       relCtrl.text.trim(),
                                       'signature_base64_data_valid',
                                       feedback: feedbackCtrl.text.trim(),
+                                      consultationFee: double.tryParse(feeCtrl.text.trim()) ?? 500.0,
                                     );
                                     await controller.fetchVisits();
 
                                     if (result != null && context.mounted) {
                                       ModalHistoryHelper.skipNextHistoryBack();
                                       Navigator.of(dialogCtx).pop();
-                                      final _ivLocale2 = Provider.of<LanguageProvider>(context, listen: false).locale;
+                                      final ivLocale2 = Provider.of<LanguageProvider>(context, listen: false).locale;
                                       showDialog(
                                         context: context,
                                         builder: (dlgCtx2) => Localizations.override(
                                           context: dlgCtx2,
-                                          locale: _ivLocale2,
+                                          locale: ivLocale2,
                                           child: HomeVisitInvoiceDialog(
                                             invoiceData: result,
                                             visit: visit,
@@ -13910,25 +13852,31 @@ class _HomeVisitExecutionScreenState extends State<HomeVisitExecutionScreen>
                               ),
                               children: [
                                 TableRow(
-                                  decoration: const BoxDecoration(
-                                    color: Color(0xFFF1F5F9),
+                                  decoration: BoxDecoration(
+                                    color: AppTheme.getTableHeadingRowColor(context),
+                                    border: Border(bottom: BorderSide(color: AppTheme.getBorderColor(context))),
                                   ),
                                   children: [
-                                    _tableHeader(context.tr('recorded_at')),
+                                    _tableHeader(context.tr('recorded_at'), icon: Icons.access_time),
                                     _tableHeader(
                                       context.tr('bp_unit', fallback: 'BP (mmHg)'),
+                                      icon: Icons.favorite_outline,
                                     ),
                                     _tableHeader(
                                       context.tr('pulse_unit', fallback: 'Pulse (bpm)'),
+                                      icon: Icons.monitor_heart_outlined,
                                     ),
                                     _tableHeader(
                                       context.tr('spo2_unit', fallback: 'SpO2 (%)'),
+                                      icon: Icons.water_drop_outlined,
                                     ),
                                     _tableHeader(
                                       context.tr('temp_unit', fallback: 'Temp (°F)'),
+                                      icon: Icons.thermostat_outlined,
                                     ),
                                     _tableHeader(
                                       context.tr('sugar_unit', fallback: 'Sugar (mg/dL)'),
+                                      icon: Icons.bloodtype_outlined,
                                     ),
                                   ],
                                 ),
@@ -15521,6 +15469,46 @@ class _HomeVisitExecutionScreenState extends State<HomeVisitExecutionScreen>
     }
   }
 
+  Future<void> _generateAndShowInvoice(HomeVisitModel visit) async {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
+    try {
+      final res = await HomeVisitService().generateInvoice(visit.id);
+      if (mounted) Navigator.of(context, rootNavigator: true).pop();
+      if (res != null && mounted) {
+        final ivLocale3 = Provider.of<LanguageProvider>(context, listen: false).locale;
+        await showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (dlgCtx) => Localizations.override(
+            context: dlgCtx,
+            locale: ivLocale3,
+            child: HomeVisitInvoiceDialog(
+              invoiceData: res,
+              visit: visit,
+              onCloseAndComplete: () {
+                _loadData();
+              },
+            ),
+          ),
+        );
+        if (mounted) {
+          _loadData();
+        }
+      } else if (mounted) {
+        AppNotification.showError(context, 'Failed to generate invoice. Please try again.');
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.of(context, rootNavigator: true).pop();
+        AppNotification.showError(context, 'Error generating invoice: $e');
+      }
+    }
+  }
+
   // Overall Read-Only Summary View for Verified/Completed Home Visits (Step 2)
   Widget _buildCompletedVisitSummaryView(
     HomeVisitModel visit,
@@ -15554,10 +15542,10 @@ class _HomeVisitExecutionScreenState extends State<HomeVisitExecutionScreen>
     final String rawPayStatus = invoice['payment_status'] ?? 'Unpaid';
     final isTamil = Provider.of<LanguageProvider>(context).isTamil;
     final String payStatus = rawPayStatus.toLowerCase() == 'paid'
-        ? context.tr('paid', fallback: 'Paid')
+        ? 'Paid'
         : (rawPayStatus.toLowerCase() == 'pending'
-            ? context.tr('pending', fallback: 'Pending')
-            : context.tr('unpaid', fallback: 'Unpaid'));
+            ? 'Pending'
+            : (rawPayStatus.toLowerCase() == 'partially paid' ? 'Partially Paid' : 'Unpaid'));
 
     final patientNameFormatted = TamilTransliterationHelper.formatName(
       visit.patientName ?? (isTamil ? 'நோயாளி' : 'Patient'),
@@ -15769,7 +15757,7 @@ class _HomeVisitExecutionScreenState extends State<HomeVisitExecutionScreen>
                                         CrossAxisAlignment.start,
                                     children: [
                                       Text(
-                                        '${context.tr('invoice_num_label', fallback: 'Invoice #:')} $invoiceNum',
+                                        'Invoice #: $invoiceNum',
                                         style: const TextStyle(
                                           fontSize: 14,
                                           fontWeight: FontWeight.bold,
@@ -15807,17 +15795,17 @@ class _HomeVisitExecutionScreenState extends State<HomeVisitExecutionScreen>
                                   ),
                                 ),
                                 onPressed: () {
-                                  final _locale3 = Provider.of<LanguageProvider>(context, listen: false).locale;
+                                  final ivLocale4 = Provider.of<LanguageProvider>(context, listen: false).locale;
                                   showDialog(
                                     context: context,
                                     builder: (dlgCtx3) => Localizations.override(
                                       context: dlgCtx3,
-                                      locale: _locale3,
+                                      locale: ivLocale4,
                                       child: HomeVisitInvoiceDialog(
                                         invoiceData: {'invoice': visit.invoice},
                                         visit: visit,
                                         onCloseAndComplete: () {
-                                          _handleLeave();
+                                          _loadData();
                                         },
                                       ),
                                     ),
@@ -15885,22 +15873,153 @@ class _HomeVisitExecutionScreenState extends State<HomeVisitExecutionScreen>
                                 ),
                               ),
                               onPressed: () {
-                                final _locale4 = Provider.of<LanguageProvider>(context, listen: false).locale;
+                                final ivLocale5 = Provider.of<LanguageProvider>(context, listen: false).locale;
                                 showDialog(
                                   context: context,
                                   builder: (dlgCtx4) => Localizations.override(
                                     context: dlgCtx4,
-                                    locale: _locale4,
+                                    locale: ivLocale5,
                                     child: HomeVisitInvoiceDialog(
                                       invoiceData: {'invoice': visit.invoice},
                                       visit: visit,
                                       onCloseAndComplete: () {
-                                        _handleLeave();
+                                        _loadData();
                                       },
                                     ),
                                   ),
                                 );
                               },
+                            ),
+                          ],
+                        ),
+                ),
+                const SizedBox(height: 20),
+              ] else if (visit.status == 'Completed' ||
+                  visit.status == 'Verified') ...[
+                Container(
+                  padding: EdgeInsets.all(isMobile ? 14 : 20),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFFBEB),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFFDE68A)),
+                    boxShadow: AppTheme.cardShadow,
+                  ),
+                  child: isMobile
+                      ? Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.all(8),
+                                  decoration: BoxDecoration(
+                                    color: Colors.amber.withValues(alpha: 0.2),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: const Icon(
+                                    Icons.receipt_long,
+                                    color: Color(0xFFB45309),
+                                    size: 22,
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        context.tr('billing_pending', fallback: 'Billing & Invoice: Not Generated'),
+                                        style: const TextStyle(
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.bold,
+                                          color: Color(0xFF92400E),
+                                        ),
+                                      ),
+                                      Text(
+                                        context.tr('billing_pending_desc', fallback: 'Generate official invoice for base visit, care procedures, and supplies.'),
+                                        style: const TextStyle(
+                                          fontSize: 12,
+                                          color: Color(0xFF78350F),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 12),
+                            SizedBox(
+                              width: double.infinity,
+                              child: ElevatedButton.icon(
+                                style: AppTheme.primaryButton,
+                                icon: const Icon(Icons.receipt, size: 16, color: Colors.white),
+                                label: Text(
+                                  context.tr('generate_bill_invoice', fallback: 'Generate Bill & Invoice'),
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 12.5,
+                                  ),
+                                ),
+                                onPressed: () => _generateAndShowInvoice(visit),
+                              ),
+                            ),
+                          ],
+                        )
+                      : Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Row(
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.all(10),
+                                  decoration: BoxDecoration(
+                                    color: Colors.amber.withValues(alpha: 0.2),
+                                    borderRadius: BorderRadius.circular(10),
+                                  ),
+                                  child: const Icon(
+                                    Icons.receipt_long,
+                                    color: Color(0xFFB45309),
+                                    size: 26,
+                                  ),
+                                ),
+                                const SizedBox(width: 14),
+                                Column(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      context.tr('billing_pending', fallback: 'Billing & Invoice: Not Generated Yet'),
+                                      style: const TextStyle(
+                                        fontSize: 15,
+                                        fontWeight: FontWeight.bold,
+                                        color: Color(0xFF92400E),
+                                      ),
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      context.tr('billing_pending_desc', fallback: 'Click below to compile all nursing care, procedures, and items into an official invoice.'),
+                                      style: const TextStyle(
+                                        fontSize: 13,
+                                        color: Color(0xFF78350F),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                            ElevatedButton.icon(
+                              style: AppTheme.primaryButton,
+                              icon: const Icon(Icons.receipt, size: 18, color: Colors.white),
+                              label: Text(
+                                context.tr('generate_bill_invoice', fallback: 'Generate Bill & Invoice'),
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              onPressed: () => _generateAndShowInvoice(visit),
                             ),
                           ],
                         ),
@@ -16106,16 +16225,17 @@ class _HomeVisitExecutionScreenState extends State<HomeVisitExecutionScreen>
                               ),
                               children: [
                                 TableRow(
-                                  decoration: const BoxDecoration(
-                                    color: Color(0xFFF1F5F9),
+                                  decoration: BoxDecoration(
+                                    color: AppTheme.getTableHeadingRowColor(context),
+                                    border: Border(bottom: BorderSide(color: AppTheme.getBorderColor(context))),
                                   ),
                                   children: [
-                                    _tableHeader(context.tr('date_time', fallback: 'Date & Time')),
-                                    _tableHeader(context.tr('bp_unit', fallback: 'BP (mmHg)')),
-                                    _tableHeader(context.tr('pulse_unit', fallback: 'Pulse (bpm)')),
-                                    _tableHeader(context.tr('spo2_unit', fallback: 'SpO2 (%)')),
-                                    _tableHeader(context.tr('temp_unit', fallback: 'Temp (°F)')),
-                                    _tableHeader(context.tr('sugar_unit', fallback: 'Sugar (mg/dL)')),
+                                    _tableHeader(context.tr('date_time', fallback: 'Date & Time'), icon: Icons.access_time),
+                                    _tableHeader(context.tr('bp_unit', fallback: 'BP (mmHg)'), icon: Icons.favorite_outline),
+                                    _tableHeader(context.tr('pulse_unit', fallback: 'Pulse (bpm)'), icon: Icons.monitor_heart_outlined),
+                                    _tableHeader(context.tr('spo2_unit', fallback: 'SpO2 (%)'), icon: Icons.water_drop_outlined),
+                                    _tableHeader(context.tr('temp_unit', fallback: 'Temp (°F)'), icon: Icons.thermostat_outlined),
+                                    _tableHeader(context.tr('sugar_unit', fallback: 'Sugar (mg/dL)'), icon: Icons.bloodtype_outlined),
                                   ],
                                 ),
                                 for (final v in sessionVitals)
@@ -16535,18 +16655,14 @@ class _HomeVisitExecutionScreenState extends State<HomeVisitExecutionScreen>
     );
   }
 
-  Widget _tableHeader(String text) {
-    return Padding(
-      padding: const EdgeInsets.all(10.0),
-      child: Text(
-        text,
-        textAlign: TextAlign.center,
-        style: const TextStyle(
-          fontWeight: FontWeight.bold,
-          fontSize: 12,
-          color: AppTheme.secondaryColor,
-        ),
-      ),
+  Widget _tableHeader(String text, {IconData? icon}) {
+    return AppTheme.tableRowHeaderCell(
+      context: context,
+      label: text,
+      icon: icon,
+      textAlign: TextAlign.center,
+      mainAxisAlignment: MainAxisAlignment.center,
+      padding: const EdgeInsets.symmetric(horizontal: 6.0, vertical: 10.0),
     );
   }
 

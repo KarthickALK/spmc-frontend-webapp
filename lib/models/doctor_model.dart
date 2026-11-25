@@ -2,6 +2,9 @@ class DoctorModel {
   final String? medicalLicense;
   final int? specializationId;
   final String? specialization;
+  final int? departmentId;
+  final String? departmentName;
+  final String? departmentCode;
   final String? experience;
   final int? numberPatientsAttended;
   final String? qualification;
@@ -16,11 +19,20 @@ class DoctorModel {
   final String? clinicLocation;
   final String? consultationFee;
   final String? areasOfExpertise;
+  final int? followupValidityDays;
+  final String? followupFee;
+  final String? morningStartTime;
+  final String? morningEndTime;
+  final String? eveningStartTime;
+  final String? eveningEndTime;
 
   DoctorModel({
     this.medicalLicense,
     this.specializationId,
     this.specialization,
+    this.departmentId,
+    this.departmentName,
+    this.departmentCode,
     this.experience,
     this.numberPatientsAttended,
     this.qualification,
@@ -35,6 +47,12 @@ class DoctorModel {
     this.clinicLocation,
     this.consultationFee,
     this.areasOfExpertise,
+    this.followupValidityDays,
+    this.followupFee,
+    this.morningStartTime,
+    this.morningEndTime,
+    this.eveningStartTime,
+    this.eveningEndTime,
   });
 
   static List<String>? _parseList(dynamic val) {
@@ -53,8 +71,13 @@ class DoctorModel {
   factory DoctorModel.fromJson(Map<String, dynamic> json) {
     return DoctorModel(
       medicalLicense: json['medical_license'] ?? json['medicalLicense'],
-      specializationId: json['specialization_id'] ?? json['specializationId'],
-      specialization: json['specialization'],
+      specializationId: json['specialization_id'] ?? json['specializationId'] ?? json['department_id'],
+      specialization: json['specialization'] ?? json['department_name'] ?? json['department'],
+      departmentId: json['department_id'] != null
+          ? int.tryParse(json['department_id'].toString())
+          : (json['specialization_id'] != null ? int.tryParse(json['specialization_id'].toString()) : null),
+      departmentName: json['department_name'] ?? json['specialization'] ?? json['department'],
+      departmentCode: json['department_code']?.toString(),
       experience: (json['experience'] ?? json['Experience'])?.toString(),
       numberPatientsAttended: (json['patients_attended'] ?? json['patientsAttended']) != null 
           ? int.tryParse((json['patients_attended'] ?? json['patientsAttended']).toString())
@@ -71,6 +94,12 @@ class DoctorModel {
       clinicLocation: json['clinic_location'] ?? json['clinicLocation'],
       consultationFee: (json['consultation_fee'] ?? json['consultationFee'])?.toString(),
       areasOfExpertise: json['areas_of_expertise'] ?? json['areasOfExpertise'],
+      followupValidityDays: json['followup_validity_days'] != null ? int.tryParse(json['followup_validity_days'].toString()) : 7,
+      followupFee: (json['followup_fee'] ?? '0.00')?.toString(),
+      morningStartTime: json['morning_start_time'] ?? json['morningStartTime'],
+      morningEndTime: json['morning_end_time'] ?? json['morningEndTime'],
+      eveningStartTime: json['evening_start_time'] ?? json['eveningStartTime'],
+      eveningEndTime: json['evening_end_time'] ?? json['eveningEndTime'],
     );
   }
 
@@ -93,6 +122,12 @@ class DoctorModel {
       'clinic_location': clinicLocation,
       'consultation_fee': consultationFee,
       'areas_of_expertise': areasOfExpertise,
+      if (followupValidityDays != null) 'followup_validity_days': followupValidityDays,
+      if (followupFee != null) 'followup_fee': followupFee,
+      if (morningStartTime != null) 'morning_start_time': morningStartTime,
+      if (morningEndTime != null) 'morning_end_time': morningEndTime,
+      if (eveningStartTime != null) 'evening_start_time': eveningStartTime,
+      if (eveningEndTime != null) 'evening_end_time': eveningEndTime,
     };
   }
 }

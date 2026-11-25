@@ -239,7 +239,7 @@ class HomeVisitController with ChangeNotifier {
   // Verify Visit & Generate Bill
   Future<Map<String, dynamic>?> verifyVisit(
       int visitId, String attenderName, String attenderRelation, String signatureUrl,
-      {String? feedback}) async {
+      {String? feedback, double? consultationFee}) async {
     _isLoading = true;
     _errorMessage = null;
     notifyListeners();
@@ -251,6 +251,7 @@ class HomeVisitController with ChangeNotifier {
         attenderRelation,
         signatureUrl,
         feedback: feedback,
+        consultationFee: consultationFee,
       );
       try {
         await fetchVisitDetails(visitId);
@@ -263,6 +264,69 @@ class HomeVisitController with ChangeNotifier {
     } finally {
       _isLoading = false;
       notifyListeners();
+    }
+  }
+
+  // Update Invoice Consultation Fee
+  Future<Map<String, dynamic>?> updateInvoiceConsultationFee(
+      int visitId, double newFee) async {
+    _isLoading = true;
+    _errorMessage = null;
+    notifyListeners();
+
+    try {
+      final res = await _service.updateInvoiceConsultationFee(visitId, newFee);
+      try {
+        await fetchVisitDetails(visitId);
+        await fetchVisits();
+      } catch (_) {}
+      return res;
+    } catch (e) {
+      _errorMessage = e.toString().replaceAll("Exception: ", "");
+      return null;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  // Generate or synchronize invoice for a home visit
+  Future<Map<String, dynamic>?> generateInvoice(
+    int visitId, {
+    double? customFee,
+    bool forceRegenerate = false,
+  }) async {
+    _isLoading = true;
+    _errorMessage = null;
+    notifyListeners();
+
+    try {
+      final res = await _service.generateInvoice(
+        visitId,
+        customFee: customFee,
+        forceRegenerate: forceRegenerate,
+      );
+      try {
+        await fetchVisitDetails(visitId);
+        await fetchVisits();
+      } catch (_) {}
+      return res;
+    } catch (e) {
+      _errorMessage = e.toString().replaceAll("Exception: ", "");
+      return null;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  // Fetch invoice details for a home visit
+  Future<Map<String, dynamic>?> fetchInvoiceForVisit(int visitId) async {
+    try {
+      return await _service.getInvoiceForVisit(visitId);
+    } catch (e) {
+      _errorMessage = e.toString().replaceAll("Exception: ", "");
+      return null;
     }
   }
 

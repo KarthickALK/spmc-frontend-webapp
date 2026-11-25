@@ -11,8 +11,8 @@ import '../controllers/appointment_controller.dart';
 import '../controllers/admin_controller.dart';
 import '../providers/auth_provider.dart';
 import '../widgets/appointment_details_dialog.dart';
-import '../utils/unsaved_changes_helper.dart';
 import '../utils/app_localizations.dart';
+import '../utils/discard_dialog_helper.dart';
 
 class AdminAppointmentManagement extends StatefulWidget {
   const AdminAppointmentManagement({Key? key}) : super(key: key);
@@ -47,6 +47,7 @@ class _AdminAppointmentManagementState
   final List<String> _statusOptions = [
     'All Status',
     'Confirmed',
+    'Checked In',
     'Waiting',
     'In Consultation',
     'Completed',
@@ -158,12 +159,20 @@ class _AdminAppointmentManagementState
   }
 
   List<String> _generateSlotsForDoctor(UserModel? doctor) {
-    if (doctor == null ||
-        doctor.slotStartTime == null ||
-        doctor.slotStartTime!.trim().isEmpty ||
-        doctor.slotEndTime == null ||
-        doctor.slotEndTime!.trim().isEmpty) {
-      return _generateDefaultSlots();
+    if (doctor == null) return [];
+
+    String? startTime = doctor.slotStartTime?.trim();
+    String? endTime = doctor.slotEndTime?.trim();
+
+    if ((startTime == null || startTime.isEmpty) && doctor.morningStartTime != null && doctor.morningStartTime!.trim().isNotEmpty) {
+      startTime = doctor.morningStartTime!.trim();
+      endTime = (doctor.eveningEndTime != null && doctor.eveningEndTime!.trim().isNotEmpty)
+          ? doctor.eveningEndTime!.trim()
+          : doctor.morningEndTime?.trim();
+    }
+
+    if (startTime == null || startTime.isEmpty || endTime == null || endTime.isEmpty) {
+      return [];
     }
 
     int duration = 30;
@@ -176,8 +185,8 @@ class _AdminAppointmentManagementState
     if (duration <= 0) duration = 30;
 
     try {
-      DateTime start = _parseTime(doctor.slotStartTime!);
-      DateTime end = _parseTime(doctor.slotEndTime!);
+      DateTime start = _parseTime(startTime);
+      DateTime end = _parseTime(endTime);
 
       List<String> slots = [];
       DateTime current = start;
@@ -185,12 +194,10 @@ class _AdminAppointmentManagementState
         slots.add(DateFormat('hh:mm a').format(current));
         current = current.add(Duration(minutes: duration));
       }
-      if (slots.isEmpty) {
-        return _generateDefaultSlots();
-      }
       return slots;
     } catch (e) {
-      return _generateDefaultSlots();
+      debugPrint('Error generating doctor slots: $e');
+      return [];
     }
   }
 
@@ -238,35 +245,29 @@ class _AdminAppointmentManagementState
 
     final allSlots = _generateSlotsForDoctor(doctor);
     final now = DateTime.now();
-    final bool isToday = date.year == now.year &&
-        date.month == now.month &&
-        date.day == now.day;
+    final todayDate = DateTime(now.year, now.month, now.day);
+    final checkDate = DateTime(date.year, date.month, date.day);
+    if (checkDate.isBefore(todayDate)) {
+      return [];
+    }
 
+    final bool isToday = checkDate.isAtSameMomentAs(todayDate);
     if (!isToday) {
       return allSlots;
     }
 
-    int duration = 30;
-    if (doctor.slotDuration != null && doctor.slotDuration!.trim().isNotEmpty) {
-      final digits = RegExp(r'\d+').firstMatch(doctor.slotDuration!)?.group(0);
-      if (digits != null) {
-        duration = int.tryParse(digits) ?? 30;
-      }
-    }
-    if (duration <= 0) duration = 30;
-
     return allSlots.where((slot) {
       try {
         final slotDt = _parseTime(slot);
-        final slotEnd = DateTime(
+        final slotStart = DateTime(
           now.year,
           now.month,
           now.day,
           slotDt.hour,
           slotDt.minute,
-        ).add(Duration(minutes: duration));
+        );
 
-        if (slotEnd.isBefore(now)) {
+        if (slotStart.isBefore(now)) {
           return false;
         }
       } catch (_) {}
@@ -277,13 +278,11 @@ class _AdminAppointmentManagementState
   @override
   void initState() {
     super.initState();
-    UnsavedChangesHelper.setUnsavedChanges(true);
     _loadData();
   }
 
   @override
   void dispose() {
-    UnsavedChangesHelper.setUnsavedChanges(false);
     _vScroll.dispose();
     _hScroll.dispose();
     _searchController.dispose();
@@ -487,6 +486,7 @@ class _AdminAppointmentManagementState
 
     List<String> availableStatuses = [
       'Confirmed',
+      'Checked In',
       'Waiting',
       'In Consultation',
       'Completed',
@@ -557,6 +557,22 @@ class _AdminAppointmentManagementState
       });
     }
 
+    final initialStatus = selectedStatus;
+    final initialDoctor = selectedDoctor;
+    final initialDate = newDate;
+    final initialTime = newTime;
+    final initialApptType = appointmentType;
+
+    bool isDirty() {
+      if (mode == 'view') return false;
+      return reasonCtrl.text.trim().isNotEmpty ||
+          selectedStatus != initialStatus ||
+          selectedDoctor != initialDoctor ||
+          newDate != initialDate ||
+          newTime != initialTime ||
+          appointmentType != initialApptType;
+    }
+
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -587,7 +603,13 @@ class _AdminAppointmentManagementState
             ],
           );
 
-          return AlertDialog(
+          return PopScope(
+            canPop: false,
+            onPopInvokedWithResult: (bool didPop, dynamic result) async {
+              if (didPop) return;
+              DiscardDialogHelper.handleCancelOrDismiss(ctx, isDirty: isDirty());
+            },
+            child: AlertDialog(
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(16),
             ),
@@ -1226,7 +1248,7 @@ class _AdminAppointmentManagementState
             ),
             actions: [
               OutlinedButton(
-                onPressed: isSaving ? null : () => Navigator.pop(ctx),
+                onPressed: isSaving ? null : () => DiscardDialogHelper.handleCancelOrDismiss(ctx, isDirty: isDirty()),
                 style: AppTheme.cancelButton,
                 child: const Text('Cancel'),
               ),
@@ -1387,6 +1409,7 @@ class _AdminAppointmentManagementState
                         ),
                 ),
             ],
+          ),
           );
         },
       ),
@@ -1439,29 +1462,25 @@ class _AdminAppointmentManagementState
             0,
           ),
           child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Appointments',
-                    style: TextStyle(
-                      fontSize: isMobile ? 20 : 26,
-                      fontWeight: FontWeight.bold,
-                      color: AppTheme.textPrimaryColor,
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Appointments',
+                      style: AppTheme.pageTitleStyle(context, isMobile: isMobile),
                     ),
-                  ),
-                  const SizedBox(height: 4),
-                  const Text(
-                    'View, edit, cancel and reschedule appointments',
-                    style: TextStyle(
-                      color: AppTheme.textSecondaryColor,
-                      fontSize: 13,
+                    const SizedBox(height: 4),
+                    Text(
+                      'View, edit, cancel and reschedule appointments',
+                      style: AppTheme.pageSubtitleStyle(context, isMobile: isMobile),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
+              const SizedBox(width: 12),
               OutlinedButton.icon(
                 onPressed: _isLoading ? null : _loadData,
                 icon: _isLoading
@@ -1478,7 +1497,10 @@ class _AdminAppointmentManagementState
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(8),
                   ),
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  padding: EdgeInsets.symmetric(
+                    horizontal: isMobile ? 12 : 16,
+                    vertical: 10,
+                  ),
                 ),
               ),
             ],
@@ -2077,29 +2099,25 @@ class _AdminAppointmentManagementState
                       child: ConstrainedBox(
                         constraints: BoxConstraints(minWidth: constraints.maxWidth),
                         child: DataTable(
-                          horizontalMargin: 20,
-                          columnSpacing: 24,
+                          horizontalMargin: isMobile ? 12 : 20,
+                          columnSpacing: isMobile ? 16 : 24,
                           headingRowHeight: 52,
                           dataRowMinHeight: 58,
                           dataRowMaxHeight: 72,
-                          headingRowColor: WidgetStateProperty.all(
-                            const Color(0xFFEDF2F7),
+                          headingRowColor: WidgetStateProperty.resolveWith(
+                            (states) => AppTheme.getTableHeadingRowColor(context),
                           ),
-                          headingTextStyle: const TextStyle(
-                            fontWeight: FontWeight.w600,
-                            color: Color(0xFF64748B),
-                            fontSize: 13,
-                          ),
-                          columns: const [
-                            DataColumn(label: Text('S.No')),
-                            DataColumn(label: Text('Patient')),
-                            DataColumn(label: Text('Doctor')),
-                            DataColumn(label: Text('Doctor Department')),
-                            DataColumn(label: Text('Date & Time')),
-                            DataColumn(label: Text('Type')),
-                            DataColumn(label: Text('Status')),
-                            DataColumn(label: Text('Override')),
-                            DataColumn(label: Text('Actions')),
+                          headingTextStyle: AppTheme.tableHeadingTextStyle(context),
+                          columns: [
+                            AppTheme.dataColumnHeader(context: context, label: 'S.No', icon: Icons.tag),
+                            AppTheme.dataColumnHeader(context: context, label: 'Patient', icon: Icons.person_outline),
+                            AppTheme.dataColumnHeader(context: context, label: 'Doctor', icon: Icons.medical_services_outlined),
+                            AppTheme.dataColumnHeader(context: context, label: 'Doctor Department', icon: Icons.business_outlined),
+                            AppTheme.dataColumnHeader(context: context, label: 'Date & Time', icon: Icons.access_time),
+                            AppTheme.dataColumnHeader(context: context, label: 'Type', icon: Icons.category_outlined),
+                            AppTheme.dataColumnHeader(context: context, label: 'Status', icon: Icons.verified_outlined),
+                            AppTheme.dataColumnHeader(context: context, label: 'Override', icon: Icons.rule_outlined),
+                            AppTheme.dataColumnHeader(context: context, label: 'Actions', icon: Icons.bolt_outlined),
                           ],
                           rows: apps.asMap().entries.map((entry) {
                             final index = entry.key;
@@ -2121,12 +2139,36 @@ class _AdminAppointmentManagementState
                               mainAxisAlignment: MainAxisAlignment.center,
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(
-                                  appt.patientName,
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.w600,
-                                    fontSize: 13,
-                                  ),
+                                Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(
+                                      appt.patientName,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w600,
+                                        fontSize: 13,
+                                      ),
+                                    ),
+                                    if (appt.tokenNumber != null) ...[
+                                      const SizedBox(width: 6),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                                        decoration: BoxDecoration(
+                                          color: AppTheme.primaryColor.withOpacity(0.1),
+                                          borderRadius: BorderRadius.circular(4),
+                                          border: Border.all(color: AppTheme.primaryColor.withOpacity(0.25)),
+                                        ),
+                                        child: Text(
+                                          'T#${appt.tokenNumber}',
+                                          style: const TextStyle(
+                                            color: AppTheme.primaryColor,
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ],
                                 ),
                                 Text(
                                   '${appt.patientDisplayId ?? appt.patientId}',
@@ -2410,69 +2452,77 @@ class _AdminAppointmentManagementState
     if (totalPages <= 1) return const SizedBox.shrink();
 
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.end,
-        children: [
-          Text(
-            context.pageOfTotal(_currentPage + 1, totalPages),
-            style: const TextStyle(
-              fontSize: 13,
-              color: AppTheme.textSecondaryColor,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-          const SizedBox(width: 16),
-          OutlinedButton(
-            onPressed: _currentPage > 0
-                ? () => setState(() => _currentPage--)
-                : null,
-            style: OutlinedButton.styleFrom(
-              minimumSize: const Size(80, 36),
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(8),
-              ),
-              side: BorderSide(
-                color: _currentPage > 0
-                    ? AppTheme.primaryColor
-                    : AppTheme.borderColor,
+      padding: EdgeInsets.symmetric(
+        horizontal: isMobile ? 12 : 24,
+        vertical: isMobile ? 12 : 16,
+      ),
+      child: Align(
+        alignment: Alignment.centerRight,
+        child: Wrap(
+          alignment: WrapAlignment.end,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            Text(
+              context.pageOfTotal(_currentPage + 1, totalPages),
+              style: const TextStyle(
+                fontSize: 13,
+                color: AppTheme.textSecondaryColor,
+                fontWeight: FontWeight.w500,
               ),
             ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.chevron_left, size: 18),
-                Text(context.tr('prev', fallback: 'Prev')),
-              ],
-            ),
-          ),
-          const SizedBox(width: 8),
-          OutlinedButton(
-            onPressed: _currentPage < totalPages - 1
-                ? () => setState(() => _currentPage++)
-                : null,
-            style: OutlinedButton.styleFrom(
-              minimumSize: const Size(80, 36),
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(8),
+            if (!isMobile) const SizedBox(width: 8),
+            OutlinedButton(
+              onPressed: _currentPage > 0
+                  ? () => setState(() => _currentPage--)
+                  : null,
+              style: OutlinedButton.styleFrom(
+                minimumSize: const Size(76, 36),
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                side: BorderSide(
+                  color: _currentPage > 0
+                      ? AppTheme.primaryColor
+                      : AppTheme.borderColor,
+                ),
               ),
-              side: BorderSide(
-                color: _currentPage < totalPages - 1
-                    ? AppTheme.primaryColor
-                    : AppTheme.borderColor,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.chevron_left, size: 18),
+                  Text(context.tr('prev', fallback: 'Prev')),
+                ],
               ),
             ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(context.tr('next', fallback: 'Next')),
-                const Icon(Icons.chevron_right, size: 18),
-              ],
+            OutlinedButton(
+              onPressed: _currentPage < totalPages - 1
+                  ? () => setState(() => _currentPage++)
+                  : null,
+              style: OutlinedButton.styleFrom(
+                minimumSize: const Size(76, 36),
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                side: BorderSide(
+                  color: _currentPage < totalPages - 1
+                      ? AppTheme.primaryColor
+                      : AppTheme.borderColor,
+                ),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(context.tr('next', fallback: 'Next')),
+                  const Icon(Icons.chevron_right, size: 18),
+                ],
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
